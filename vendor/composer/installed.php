@@ -1,9 +1,9 @@
 <?php return array(
     'root' => array(
         'name' => 'anil/file-export',
-        'pretty_version' => '1.0.0+no-version-set',
-        'version' => '1.0.0.0',
-        'reference' => NULL,
+        'pretty_version' => 'dev-main',
+        'version' => 'dev-main',
+        'reference' => 'd4cbc08b2da96a9bfba92ac384332cfc96c34012',
         'type' => 'library',
         'install_path' => __DIR__ . '/../../',
         'aliases' => array(),
@@ -11,9 +11,9 @@
     ),
     'versions' => array(
         'anil/file-export' => array(
-            'pretty_version' => '1.0.0+no-version-set',
-            'version' => '1.0.0.0',
-            'reference' => NULL,
+            'pretty_version' => 'dev-main',
+            'version' => 'dev-main',
+            'reference' => 'd4cbc08b2da96a9bfba92ac384332cfc96c34012',
             'type' => 'library',
             'install_path' => __DIR__ . '/../../',
             'aliases' => array(),
