@@ -1,5 +1,14 @@
 {
     "name": "anil/file-export",
+    "description": "This package is used to export data in excel",
+    "keywords": [
+        "anil",
+        "excel",
+        "export",
+        "laravel",
+        "laravel-excel",
+        "maatwebsite"
+    ],
     "autoload": {
         "psr-4": {
             "Anil\\FileExport\\": "src/"
@@ -16,5 +25,8 @@
         "illuminate/http": "^v10.20||^9.52||^8.83.27",
         "maatwebsite/excel": "^3.1||^2.1",
         "illuminate/support": "^10.20||v9.52.15||^v8.83"
-    }
+    },
+    "license": "MIT",
+    "minimum-stability": "stable",
+    "prefer-stable": true
 }
