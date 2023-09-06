@@ -3,7 +3,7 @@
         'name' => 'anil/file-export',
         'pretty_version' => 'dev-main',
         'version' => 'dev-main',
-        'reference' => 'f731d14aa363b922d823dd151b0d036c0ce8bb55',
+        'reference' => '0c4f860690de2dd920d3e908c611fd0deea967e9',
         'type' => 'library',
         'install_path' => __DIR__ . '/../../',
         'aliases' => array(),
@@ -13,7 +13,7 @@
         'anil/file-export' => array(
             'pretty_version' => 'dev-main',
             'version' => 'dev-main',
-            'reference' => 'f731d14aa363b922d823dd151b0d036c0ce8bb55',
+            'reference' => '0c4f860690de2dd920d3e908c611fd0deea967e9',
             'type' => 'library',
             'install_path' => __DIR__ . '/../../',
             'aliases' => array(),
