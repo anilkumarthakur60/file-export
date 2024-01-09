@@ -20,10 +20,11 @@ class CommonExport implements FromCollection, WithMapping, WithHeadings, WithEve
         return $this->headers;
     }
 
-    public function collection():Collection
+    public function collection(): Collection
     {
         return $this->model->map(function ($item, $index) {
             $item->s_no = $index + 1;
+
             return $item;
         });
     }
