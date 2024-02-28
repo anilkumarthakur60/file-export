@@ -3,7 +3,9 @@
 namespace Anil\FileExport\Traits;
 
 use Anil\FileExport\Service\CommonExport;
+use Illuminate\Filesystem\AwsS3V3Adapter;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Maatwebsite\Excel\Facades\Excel;
@@ -15,12 +17,19 @@ trait ExportDefaultMethods
     private function finalExport(string $exportName, $exportClass): JsonResponse
     {
         $path = 'export/'.$exportName;
-        $export = Excel::store($exportClass, $path, config('filesystems.default'));
+        $export = Excel::store($exportClass, $path, Config::get('fileExport.disk'));
 
         if ($export) {
+            $disk = Storage::disk(Config::get('fileExport.disk'));
+            if ($disk instanceof AwsS3V3Adapter) {
+                $url = Storage::cloud()->temporaryUrl($path, Config::get('fileExport.expireTime'));
+            } else {
+                $url = Storage::disk(Config::get('fileExport.disk'))->url($path);
+            }
+//                'url'     => Storage::disk(Config::get('fileExport.disk'))->url($path),
             return response()->json([
                 'code'    => 200,
-                'url'     => Storage::disk('public')->url($path),
+                'url'     => $url,
                 'message' => 'Success',
             ], ResponseAlias::HTTP_OK);
         }
