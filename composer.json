@@ -26,6 +26,17 @@
     "maatwebsite/excel": "2.*|3.*",
     "illuminate/support": "7.*|8.*|9.*|10.*|11.*"
   },
+  "extra": {
+    "laravel": {
+      "providers": [
+        "Anil\\FileExport\\Providers\\ExportServiceProvider"
+      ]
+    }
+  },
+  "config": {
+    "optimize-autoloader": true,
+    "sort-packages": true
+  },
   "license": "MIT",
   "minimum-stability": "stable",
   "prefer-stable": true
