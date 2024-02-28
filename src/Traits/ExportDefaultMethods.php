@@ -21,7 +21,6 @@ trait ExportDefaultMethods
         $export = Excel::store($exportClass, $path, Config::get('fileExport.disk'));
         $expiry = Carbon::today()->addDays(Config::get('fileExport.expireTime'));
 
-
         if ($export) {
             $disk = Storage::disk(Config::get('fileExport.disk'));
             if ($disk instanceof AwsS3V3Adapter) {
