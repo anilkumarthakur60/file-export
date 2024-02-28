@@ -5,6 +5,7 @@ namespace Anil\FileExport\Traits;
 use Anil\FileExport\Service\CommonExport;
 use Illuminate\Filesystem\AwsS3V3Adapter;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -18,11 +19,13 @@ trait ExportDefaultMethods
     {
         $path = 'export/'.$exportName;
         $export = Excel::store($exportClass, $path, Config::get('fileExport.disk'));
+        $expiry = Carbon::today()->addDays(Config::get('fileExport.expireTime'));
+
 
         if ($export) {
             $disk = Storage::disk(Config::get('fileExport.disk'));
             if ($disk instanceof AwsS3V3Adapter) {
-                $url = Storage::cloud()->temporaryUrl($path, Config::get('fileExport.expireTime'));
+                $url = Storage::cloud()->temporaryUrl($path, $expiry);
             } else {
                 $url = Storage::disk(Config::get('fileExport.disk'))->url($path);
             }
