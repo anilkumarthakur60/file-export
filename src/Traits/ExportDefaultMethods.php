@@ -26,6 +26,7 @@ trait ExportDefaultMethods
             } else {
                 $url = Storage::disk(Config::get('fileExport.disk'))->url($path);
             }
+
 //                'url'     => Storage::disk(Config::get('fileExport.disk'))->url($path),
             return response()->json([
                 'code'    => 200,
