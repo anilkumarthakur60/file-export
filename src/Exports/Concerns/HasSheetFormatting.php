@@ -10,7 +10,15 @@ use PhpOffice\PhpSpreadsheet\Style\Alignment;
 use PhpOffice\PhpSpreadsheet\Style\Fill;
 use PhpOffice\PhpSpreadsheet\Worksheet\Worksheet;
 
-trait HasExportStyling
+/**
+ * Provides shared formatting logic for export classes.
+ *
+ * Implements the Maatwebsite concerns: WithStyles, WithEvents,
+ * WithColumnFormatting, WithColumnWidths, WithTitle, WithProperties.
+ *
+ * Used by CollectionExport and QueryExport to eliminate code duplication.
+ */
+trait HasSheetFormatting
 {
     protected StyleConfig $styleConfig;
 
@@ -18,17 +26,20 @@ trait HasExportStyling
 
     private int $serialIndex = 0;
 
+    private ?string $sheetTitle = null;
+
     /** @var array<string, string> */
     protected array $columnFormats = [];
-
-    private ?string $sheetTitle = null;
 
     /** @var array<string, float|int> */
     private array $columnWidths = [];
 
     /** @var array<string, string> */
-    private array $properties = [];
+    private array $documentProperties = [];
 
+    /**
+     * Include a serial number column as the first column.
+     */
     public function withSerialNumber(bool $include = true): static
     {
         $this->includeSerialNumber = $include;
@@ -36,7 +47,10 @@ trait HasExportStyling
         return $this;
     }
 
-    public function withStyleConfig(StyleConfig $config): static
+    /**
+     * Override the default styling for this export.
+     */
+    public function withStyling(StyleConfig $config): static
     {
         $this->styleConfig = $config;
 
@@ -44,7 +58,9 @@ trait HasExportStyling
     }
 
     /**
-     * @param  array<string, string>  $formats
+     * Set column number/date formats using PhpSpreadsheet format constants.
+     *
+     * @param  array<string, string>  $formats  Keyed by column letter (e.g., ['A' => NumberFormat::FORMAT_DATE_DDMMYYYY]).
      */
     public function withColumnFormats(array $formats): static
     {
@@ -53,6 +69,9 @@ trait HasExportStyling
         return $this;
     }
 
+    /**
+     * Set the sheet tab title (visible in multi-sheet workbooks).
+     */
     public function withTitle(string $title): static
     {
         $this->sheetTitle = $title;
@@ -61,7 +80,9 @@ trait HasExportStyling
     }
 
     /**
-     * @param  array<string, float|int>  $widths  e.g. ['A' => 20, 'B' => 30.5]
+     * Set explicit column widths. Overrides auto-size for specified columns.
+     *
+     * @param  array<string, float|int>  $widths  Keyed by column letter (e.g., ['A' => 20, 'B' => 35.5]).
      */
     public function withColumnWidths(array $widths): static
     {
@@ -71,14 +92,20 @@ trait HasExportStyling
     }
 
     /**
-     * @param  array<string, string>  $properties  e.g. ['title' => 'Report', 'creator' => 'System']
+     * Set document metadata properties (title, creator, company, description, etc.).
+     *
+     * @param  array<string, string>  $properties  Keyed by property name (e.g., ['title' => 'Report', 'creator' => 'System']).
      */
     public function withProperties(array $properties): static
     {
-        $this->properties = $properties;
+        $this->documentProperties = $properties;
 
         return $this;
     }
+
+    // ──────────────────────────────────────────
+    // Maatwebsite concern implementations
+    // ──────────────────────────────────────────
 
     /**
      * @return array<string, string>
@@ -88,6 +115,9 @@ trait HasExportStyling
         return $this->columnFormats;
     }
 
+    /**
+     * Return the sheet tab title.
+     */
     public function title(): string
     {
         return $this->sheetTitle ?? 'Sheet1';
@@ -106,10 +136,12 @@ trait HasExportStyling
      */
     public function properties(): array
     {
-        return $this->properties;
+        return $this->documentProperties;
     }
 
     /**
+     * Apply header styling: bold, background color, font color, alignment.
+     *
      * @return array<int, array<string, mixed>>
      */
     public function styles(Worksheet $sheet): array
@@ -122,6 +154,10 @@ trait HasExportStyling
 
         if ($this->styleConfig->headerBold) {
             $font['bold'] = true;
+        }
+
+        if ($this->styleConfig->headerFontSize !== 12) {
+            $font['size'] = $this->styleConfig->headerFontSize;
         }
 
         if ($this->styleConfig->headerFontColor !== '') {
@@ -148,6 +184,8 @@ trait HasExportStyling
     }
 
     /**
+     * Register after-sheet events: text wrapping, header freeze, auto-filter.
+     *
      * @return array<string, \Closure>
      */
     public function registerEvents(): array
@@ -176,7 +214,13 @@ trait HasExportStyling
         ];
     }
 
+    // ──────────────────────────────────────────
+    // Internal helpers
+    // ──────────────────────────────────────────
+
     /**
+     * Prepend the serial number column label to the header array.
+     *
      * @param  array<int, string>  $headers
      * @return array<int, string>
      */
@@ -190,19 +234,24 @@ trait HasExportStyling
     }
 
     /**
-     * @param  array<int, mixed>  $mapped
+     * Prepend the next serial number to a mapped row.
+     *
+     * @param  array<int, mixed>  $mappedRow
      * @return array<int, mixed>
      */
-    protected function prependSerialNumber(array $mapped): array
+    protected function prependSerialNumber(array $mappedRow): array
     {
         if ($this->includeSerialNumber) {
-            array_unshift($mapped, ++$this->serialIndex);
+            array_unshift($mappedRow, ++$this->serialIndex);
         }
 
-        return $mapped;
+        return $mappedRow;
     }
 
-    protected function initializeStyling(StyleConfig $styleConfig): void
+    /**
+     * Initialize the style config from a given StyleConfig object.
+     */
+    protected function initializeFormatting(StyleConfig $styleConfig): void
     {
         $this->styleConfig = $styleConfig;
     }

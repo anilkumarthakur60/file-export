@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Anil\FileExport\Exports;
 
 use Anil\FileExport\DataTransferObjects\StyleConfig;
-use Anil\FileExport\Exports\Concerns\HasExportStyling;
+use Anil\FileExport\Exports\Concerns\HasSheetFormatting;
 use Closure;
 use Illuminate\Support\Collection;
 use Maatwebsite\Excel\Concerns\FromCollection;
@@ -20,15 +20,22 @@ use Maatwebsite\Excel\Concerns\WithStyles;
 use Maatwebsite\Excel\Concerns\WithTitle;
 
 /**
+ * Exports data from an in-memory Collection.
+ *
+ * Suitable for small-to-medium datasets that are already loaded in memory.
+ * For large datasets, use QueryExport with automatic chunking instead.
+ *
  * @implements WithMapping<mixed>
  */
 class CollectionExport implements FromCollection, ShouldAutoSize, WithColumnFormatting, WithColumnWidths, WithEvents, WithHeadings, WithMapping, WithProperties, WithStyles, WithTitle
 {
-    use HasExportStyling;
+    use HasSheetFormatting;
 
     /**
-     * @param  Collection<int, mixed>  $data
-     * @param  array<int, string>  $headers
+     * @param  Collection<int, mixed>  $data  The data to export.
+     * @param  array<int, string>  $headers  Column header labels.
+     * @param  Closure  $mappingCallback  Maps each row to an array of cell values.
+     * @param  StyleConfig  $styleConfig  Styling configuration for this sheet.
      */
     public function __construct(
         private readonly Collection $data,
@@ -36,7 +43,7 @@ class CollectionExport implements FromCollection, ShouldAutoSize, WithColumnForm
         private readonly Closure $mappingCallback,
         StyleConfig $styleConfig = new StyleConfig,
     ) {
-        $this->initializeStyling($styleConfig);
+        $this->initializeFormatting($styleConfig);
     }
 
     /**

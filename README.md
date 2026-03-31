@@ -1,6 +1,8 @@
 # Laravel File Export
 
-A powerful, fluent file export package for Laravel built on top of [Maatwebsite/Excel](https://laravel-excel.com/). SOLID architecture, PHPStan level max, multi-sheet support — works for any project size.
+A powerful, fluent file export package for Laravel built on top of [Maatwebsite/Excel](https://laravel-excel.com/).
+
+SOLID architecture. PHPStan level max. Fully injectable and mockable — every dependency comes through the constructor.
 
 ## Requirements
 
@@ -22,16 +24,18 @@ php artisan vendor:publish --tag=file-export-config
 
 ---
 
-## Quick Start (Beginner)
+## Quick Start
 
-### Controller Trait — One-liner Export
+### Controller Trait
+
+The simplest way — add `CanExport` to your controller:
 
 ```php
-use Anil\FileExport\Traits\HasExport;
+use Anil\FileExport\Traits\CanExport;
 
 class UserController extends Controller
 {
-    use HasExport;
+    use CanExport;
 
     public function exportUsers()
     {
@@ -48,7 +52,7 @@ class UserController extends Controller
 }
 ```
 
-### Facade — Fluent API
+### Facade
 
 ```php
 use Anil\FileExport\Facades\FileExport;
@@ -60,11 +64,32 @@ return FileExport::fromQuery(User::query())
     ->toResponse();
 ```
 
+### Dependency Injection (Recommended for Testing)
+
+```php
+use Anil\FileExport\Services\FileExporter;
+
+class ReportController extends Controller
+{
+    public function __construct(
+        private readonly FileExporter $exporter,
+    ) {}
+
+    public function generate()
+    {
+        return $this->exporter
+            ->fromQuery(Report::query())
+            ->withHeaders(['Title', 'Status'])
+            ->withMapping(fn (Report $r) => [$r->title, $r->status])
+            ->store()
+            ->toResponse();
+    }
+}
+```
+
 ---
 
-## Intermediate Usage
-
-### Export Formats
+## Formats
 
 ```php
 use Anil\FileExport\Enums\ExportFormat;
@@ -77,92 +102,134 @@ use Anil\FileExport\Enums\ExportFormat;
 ->format(ExportFormat::PDF)    // PDF (requires mpdf/mpdf)
 ```
 
-### Output Modes
+---
+
+## Output Modes
+
+### Store to disk
 
 ```php
-// Store to disk → ExportResult (with URL, path, filename)
-$result = FileExport::fromQuery(User::query())
+$result = $exporter->fromQuery(User::query())
     ->withHeaders(['Name', 'Email'])
     ->withMapping(fn ($u) => [$u->name, $u->email])
     ->store();
 
-$result->url;       // Download URL
-$result->filename;  // Generated filename
-$result->path;      // Storage path
+$result->filename;  // "users_2024-01-15_143022.xlsx"
+$result->url;       // Download URL (signed for cloud disks)
+$result->path;      // "exports/users_2024-01-15_143022.xlsx"
+$result->disk;      // "public"
 $result->toResponse();  // JsonResponse
-$result->toArray();     // Raw array
+$result->toArray();     // Plain array
+```
 
-// Direct browser download
-return FileExport::fromQuery(User::query())
+### Direct download
+
+```php
+return $exporter->fromQuery(User::query())
     ->withHeaders(['Name', 'Email'])
     ->withMapping(fn ($u) => [$u->name, $u->email])
     ->download();
+```
 
-// Queue for background processing
-$result = FileExport::fromQuery(User::query())
+### Queue for background processing
+
+```php
+$result = $exporter->fromQuery(User::query())
     ->withHeaders(['Name', 'Email'])
     ->withMapping(fn ($u) => [$u->name, $u->email])
     ->queue();
+```
 
-// Raw binary content (for API responses, email attachments, etc.)
-$binary = FileExport::fromQuery(User::query())
+### Raw binary content
+
+Useful for email attachments, API responses, or piping to other services:
+
+```php
+$binary = $exporter->fromQuery(User::query())
     ->withHeaders(['Name', 'Email'])
     ->withMapping(fn ($u) => [$u->name, $u->email])
     ->raw();
 ```
 
+---
+
+## Features
+
 ### From a Collection
 
 ```php
-$result = FileExport::fromCollection(collect($data))
+$exporter->fromCollection(collect($data))
     ->withHeaders(['Key', 'Value'])
     ->withMapping(fn (array $item) => [$item['key'], $item['value']])
     ->store();
 ```
 
-### Serial Numbers, Limits, Custom Filename
+### Serial Numbers
 
 ```php
-$result = FileExport::fromQuery(Order::where('status', 'completed'))
-    ->withHeaders(['Order #', 'Customer', 'Total'])
-    ->withMapping(fn (Order $o) => [$o->number, $o->customer->name, $o->total])
-    ->withSerialNumber()
-    ->withLimit(5000)
-    ->filename('completed-orders')
-    ->disk('s3')
-    ->store();
+->withSerialNumber()  // Adds "S.N." column (configurable label)
 ```
 
-### Column Formatting & Widths
+### Row Limit
+
+```php
+->withLimit(5000)  // Export only first 5000 rows
+```
+
+### Chunk Size
+
+```php
+->withChunkSize(5000)  // Process 5000 rows at a time (query exports)
+```
+
+### Custom Filename and Disk
+
+```php
+->filename('monthly-report')  // Timestamp appended automatically
+->disk('s3')
+```
+
+### Column Formatting
 
 ```php
 use PhpOffice\PhpSpreadsheet\Style\NumberFormat;
 
-$result = FileExport::fromQuery(Invoice::query())
-    ->withHeaders(['Date', 'Amount', 'Notes'])
-    ->withMapping(fn (Invoice $i) => [$i->date, $i->amount, $i->notes])
-    ->withColumnFormats([
-        'A' => NumberFormat::FORMAT_DATE_DDMMYYYY,
-        'B' => NumberFormat::FORMAT_NUMBER_COMMA_SEPARATED1,
-    ])
-    ->withColumnWidths([
-        'A' => 15,
-        'B' => 20,
-        'C' => 50,
-    ])
-    ->store();
+->withColumnFormats([
+    'A' => NumberFormat::FORMAT_DATE_DDMMYYYY,
+    'B' => NumberFormat::FORMAT_NUMBER_COMMA_SEPARATED1,
+])
+```
+
+### Column Widths
+
+```php
+->withColumnWidths([
+    'A' => 15,
+    'B' => 25,
+    'C' => 50,
+])
+```
+
+### Document Properties
+
+```php
+->withProperties([
+    'title' => 'Monthly Report',
+    'creator' => 'Admin System',
+    'company' => 'Acme Corp',
+    'description' => 'Exported user data',
+])
 ```
 
 ---
 
-## Advanced Usage
-
-### Multi-Sheet Exports
+## Multi-Sheet Exports
 
 ```php
 use Anil\FileExport\Builders\SheetBuilder;
 
-$result = FileExport::addSheet('Active Users', fn (SheetBuilder $sheet) => $sheet
+$result = $exporter
+    ->addSheet('Active Users', fn (SheetBuilder $sheet) => $sheet
         ->fromQuery(User::where('active', true))
         ->withHeaders(['Name', 'Email'])
         ->withMapping(fn (User $u) => [$u->name, $u->email])
@@ -172,18 +239,18 @@ $result = FileExport::addSheet('Active Users', fn (SheetBuilder $sheet) => $shee
         ->withHeaders(['Name', 'Email', 'Deactivated At'])
         ->withMapping(fn (User $u) => [$u->name, $u->email, $u->deactivated_at])
     )
-    ->withDocumentProperties([
-        'title' => 'User Report',
-        'creator' => 'System',
-        'description' => 'Monthly user export',
-    ])
+    ->withProperties(['title' => 'User Report'])
     ->filename('user-report')
     ->store();
 ```
 
-Each sheet gets its own headers, mapping, styling, serial numbers, and data source.
+Each sheet has its own data source, headers, mapping, styling, serial numbers, column widths, and formatting.
 
-### Exportable Contract — Reusable Export Classes
+---
+
+## Exportable Contract
+
+Create reusable export definitions:
 
 ```php
 use Anil\FileExport\Contracts\Exportable;
@@ -202,103 +269,82 @@ class UserExport implements Exportable
 }
 
 // Usage:
-$result = FileExport::fromExportable(new UserExport, User::with('role')->query())->store();
+$exporter->fromExportable(new UserExport, User::with('role')->query())->store();
 ```
 
-### Custom Styling per Export
+---
+
+## Custom Styling
+
+Override the default styling from config for a specific export:
 
 ```php
 use Anil\FileExport\DataTransferObjects\StyleConfig;
 
 $style = new StyleConfig(
     headerBold: true,
-    headerBackground: 'FF0000',
+    headerFontSize: 14,
     headerFontColor: 'FFFFFF',
+    headerBackground: 'FF0000',
     wrapText: false,
     freezeHeader: true,
     autoFilter: false,
     serialNumberHeader: '#',
 );
 
-$result = FileExport::fromQuery(User::query())
+$exporter->fromQuery(User::query())
     ->withHeaders(['Name', 'Email'])
     ->withMapping(fn (User $u) => [$u->name, $u->email])
-    ->withStyleConfig($style)
+    ->withStyling($style)
     ->store();
-```
-
-### Document Properties
-
-```php
-$result = FileExport::fromQuery(User::query())
-    ->withHeaders(['Name', 'Email'])
-    ->withMapping(fn ($u) => [$u->name, $u->email])
-    ->withDocumentProperties([
-        'title' => 'User List',
-        'creator' => 'Admin System',
-        'company' => 'Acme Corp',
-        'description' => 'Exported user data',
-    ])
-    ->store();
-```
-
-### Dependency Injection (Testable)
-
-```php
-use Anil\FileExport\Services\ExportService;
-
-class ReportController extends Controller
-{
-    public function __construct(
-        private readonly ExportService $exportService,
-    ) {}
-
-    public function generate()
-    {
-        return $this->exportService
-            ->fromQuery(Report::query())
-            ->withHeaders(['Title', 'Status'])
-            ->withMapping(fn (Report $r) => [$r->title, $r->status])
-            ->store()
-            ->toResponse();
-    }
-}
-```
-
-### Swapping Implementations (OCP / DIP)
-
-Override filename generation or URL resolution in your `AppServiceProvider`:
-
-```php
-use Anil\FileExport\Contracts\FilenameGeneratorContract;
-use Anil\FileExport\Contracts\UrlResolverContract;
-
-$this->app->bind(FilenameGeneratorContract::class, MyCustomFilenameGenerator::class);
-$this->app->bind(UrlResolverContract::class, CdnUrlResolver::class);
 ```
 
 ---
 
-## ExportResult DTO
+## Swapping Implementations
 
-`store()` and `queue()` return an `ExportResult` value object:
+Override the filename or URL strategy in your `AppServiceProvider`:
 
 ```php
-$result = FileExport::fromQuery(User::query())
+use Anil\FileExport\Contracts\FilenameGenerator;
+use Anil\FileExport\Contracts\UrlResolver;
+
+$this->app->bind(FilenameGenerator::class, MyHashedFilenameGenerator::class);
+$this->app->bind(UrlResolver::class, CloudfrontUrlResolver::class);
+```
+
+---
+
+## Testing
+
+Every dependency is injected via constructor — no hidden static calls in service classes.
+
+```php
+use Anil\FileExport\Services\FileExporter;
+use Maatwebsite\Excel\Excel;
+use Mockery;
+
+// Mock the Excel service
+$excel = Mockery::mock(Excel::class);
+$excel->shouldReceive('store')->once()->andReturn(true);
+
+// Mock the filename generator
+$filenameGenerator = Mockery::mock(FilenameGenerator::class);
+$filenameGenerator->shouldReceive('generate')->andReturn('test_2024-01-01_120000.xlsx');
+
+// Mock the URL resolver
+$urlResolver = Mockery::mock(UrlResolver::class);
+$urlResolver->shouldReceive('resolve')->andReturn('https://example.com/exports/test.xlsx');
+
+// Create a fully testable exporter
+$exporter = new FileExporter($config, $filenameGenerator, $urlResolver, $excel);
+
+$result = $exporter->fromCollection(collect([...]))
     ->withHeaders(['Name'])
-    ->withMapping(fn ($u) => [$u->name])
+    ->withMapping(fn ($row) => [$row['name']])
     ->store();
 
-$result->filename;  // "users_2024-01-15_143022.xlsx"
-$result->url;       // "https://your-app.com/storage/exports/..."
-$result->path;      // "exports/users_2024-01-15_143022.xlsx"
-$result->disk;      // "public"
-
-// Convert to JSON response
-return $result->toResponse();
-
-// Or get raw array
-$data = $result->toArray();
+$this->assertEquals('test_2024-01-01_120000.xlsx', $result->filename);
 ```
 
 ---
@@ -308,27 +354,40 @@ $data = $result->toArray();
 ```php
 // config/file-export.php
 return [
-    'disk'             => 'public',
-    'path'             => 'exports',
-    'expire_days'      => 7,
-    'default_format'   => 'xlsx',       // xlsx, csv, tsv, ods, html, pdf
-    'max_rows'         => 1000000,
-    'chunk_size'       => 1000,
-    'timestamp_format' => 'Y-m-d_His',
+    'disk'           => 'public',
+    'path'           => 'exports',
+    'expire_days'    => 7,
+    'default_format' => 'xlsx',
+    'max_rows'       => 1000000,
+    'chunk_size'     => 1000,
+
+    'filename' => [
+        'prefix'           => 'export',
+        'timestamp_format' => 'Y-m-d_His',
+        'random_length'    => 8,
+    ],
+
+    'properties' => [
+        'creator' => '',
+        'company' => '',
+    ],
 
     'styling' => [
-        'header_bold'          => true,
-        'header_background'    => '4472C4',
-        'header_font_color'    => 'FFFFFF',
-        'wrap_text'            => true,
-        'freeze_header'        => true,
-        'auto_filter'          => true,
-        'serial_number_header' => 'S.N.',
+        'header_bold'           => true,
+        'header_font_size'      => 12,
+        'header_font_color'     => 'FFFFFF',
+        'header_background'     => '4472C4',
+        'wrap_text'             => true,
+        'freeze_header'         => true,
+        'auto_filter'           => true,
+        'serial_number_header'  => 'S.N.',
     ],
 ];
 ```
 
-All values support `env()` overrides — see the config file for keys.
+All values support `env()` overrides. See the config file for environment variable names.
+
+---
 
 ## Static Analysis
 
@@ -336,7 +395,7 @@ All values support `env()` overrides — see the config file for keys.
 composer analyse
 ```
 
-PHPStan configured at **level max** with Larastan — 0 errors.
+PHPStan level max with Larastan — 0 errors.
 
 ---
 
@@ -345,35 +404,35 @@ PHPStan configured at **level max** with Larastan — 0 errors.
 ```
 src/
 ├── Builders/
-│   └── SheetBuilder.php              # Sheet-level configuration builder
+│   └── SheetBuilder.php                   # Configures a single sheet
 ├── Contracts/
-│   ├── Exportable.php                # User export contract
-│   ├── FilenameGeneratorContract.php  # Swappable filename strategy
-│   └── UrlResolverContract.php        # Swappable URL resolution
+│   ├── Exportable.php                     # User export definition contract
+│   ├── FilenameGenerator.php              # Swappable filename strategy
+│   └── UrlResolver.php                    # Swappable URL resolution
 ├── DataTransferObjects/
-│   ├── ExportConfig.php              # Typed config DTO
-│   ├── ExportResult.php              # Store/queue result DTO
-│   └── StyleConfig.php              # Styling config DTO
+│   ├── ExportConfig.php                   # Full config as typed readonly DTO
+│   ├── ExportResult.php                   # Result from store()/queue()
+│   └── StyleConfig.php                    # Styling config readonly DTO
 ├── Enums/
-│   └── ExportFormat.php              # XLSX, CSV, TSV, ODS, HTML, PDF
+│   └── ExportFormat.php                   # XLSX, CSV, TSV, ODS, HTML, PDF
 ├── Exceptions/
-│   └── ExportException.php           # Descriptive named constructors
+│   └── FileExportException.php            # Named constructors for each error
 ├── Exports/
 │   ├── Concerns/
-│   │   └── HasExportStyling.php      # Shared styling (zero duplication)
-│   ├── CollectionExport.php          # FromCollection exports
-│   ├── MultiSheetExport.php          # Multi-sheet wrapper
-│   └── QueryExport.php              # FromQuery + chunked exports
+│   │   └── HasSheetFormatting.php         # Shared formatting (zero duplication)
+│   ├── CollectionExport.php               # FromCollection
+│   ├── MultiSheetExport.php               # WithMultipleSheets wrapper
+│   └── QueryExport.php                    # FromQuery + chunked
 ├── Facades/
-│   └── FileExport.php
+│   └── FileExport.php                     # @mixin FileExporter
 ├── Providers/
-│   └── ExportServiceProvider.php
+│   └── FileExportServiceProvider.php      # Container bindings
 ├── Services/
-│   ├── ExportService.php             # Main fluent API
-│   ├── FilenameGenerator.php         # SRP: filename logic
-│   └── UrlResolver.php              # SRP: URL resolution
+│   ├── FileExporter.php                   # Main fluent API
+│   ├── TemporaryUrlResolver.php           # Try signed URL, fallback to public
+│   └── TimestampedFilenameGenerator.php   # prefix-random_timestamp.ext
 └── Traits/
-    └── HasExport.php                 # Controller convenience trait
+    └── CanExport.php                      # Controller convenience methods
 ```
 
 ## License

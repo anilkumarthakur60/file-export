@@ -40,7 +40,7 @@
   "extra": {
     "laravel": {
       "providers": [
-        "Anil\\FileExport\\Providers\\ExportServiceProvider"
+        "Anil\\FileExport\\Providers\\FileExportServiceProvider"
       ]
     }
   },

@@ -6,7 +6,7 @@ namespace Anil\FileExport\Builders;
 
 use Anil\FileExport\Contracts\Exportable;
 use Anil\FileExport\DataTransferObjects\StyleConfig;
-use Anil\FileExport\Exceptions\ExportException;
+use Anil\FileExport\Exceptions\FileExportException;
 use Anil\FileExport\Exports\CollectionExport;
 use Anil\FileExport\Exports\QueryExport;
 use Closure;
@@ -14,6 +14,19 @@ use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Support\Collection;
 
+/**
+ * Fluent builder for configuring a single export sheet.
+ *
+ * Used internally by FileExporter for single-sheet exports, and directly
+ * in addSheet() closures for multi-sheet exports.
+ *
+ * Example:
+ *   $exporter->addSheet('Users', function (SheetBuilder $sheet) {
+ *       $sheet->fromQuery(User::query())
+ *           ->withHeaders(['Name', 'Email'])
+ *           ->withMapping(fn ($u) => [$u->name, $u->email]);
+ *   });
+ */
 final class SheetBuilder
 {
     /** @var array<int, string> */
@@ -22,7 +35,7 @@ final class SheetBuilder
     private ?Closure $mappingCallback = null;
 
     /** @var EloquentBuilder<\Illuminate\Database\Eloquent\Model>|Relation<\Illuminate\Database\Eloquent\Model, \Illuminate\Database\Eloquent\Model, mixed>|null */
-    private EloquentBuilder|Relation|null $builder = null;
+    private EloquentBuilder|Relation|null $queryBuilder = null;
 
     /** @var Collection<int, mixed>|null */
     private ?Collection $collection = null;
@@ -33,7 +46,9 @@ final class SheetBuilder
 
     private ?int $chunkSize = null;
 
-    private ?int $limit = null;
+    private ?int $rowLimit = null;
+
+    private ?string $sheetTitle = null;
 
     /** @var array<string, string> */
     private array $columnFormats = [];
@@ -41,39 +56,47 @@ final class SheetBuilder
     /** @var array<string, float|int> */
     private array $columnWidths = [];
 
-    private ?string $title = null;
-
     /** @var array<string, string> */
-    private array $properties = [];
+    private array $documentProperties = [];
 
     public function __construct(
-        private readonly StyleConfig $defaultStyle,
+        private readonly StyleConfig $defaultStyling,
         private readonly int $defaultChunkSize = 1000,
     ) {}
 
+    // ──────────────────────────────────────────
+    // Data source
+    // ──────────────────────────────────────────
+
     /**
+     * Set an Eloquent query as the data source (memory-efficient, chunked).
+     *
      * @param  EloquentBuilder<\Illuminate\Database\Eloquent\Model>|Relation<\Illuminate\Database\Eloquent\Model, \Illuminate\Database\Eloquent\Model, mixed>  $builder
      */
     public function fromQuery(EloquentBuilder|Relation $builder): self
     {
-        $this->builder = $builder;
+        $this->queryBuilder = $builder;
         $this->collection = null;
 
         return $this;
     }
 
     /**
+     * Set a Collection as the data source (loads all data into memory).
+     *
      * @param  Collection<int, mixed>  $collection
      */
     public function fromCollection(Collection $collection): self
     {
         $this->collection = $collection;
-        $this->builder = null;
+        $this->queryBuilder = null;
 
         return $this;
     }
 
     /**
+     * Set both headers and mapping from an Exportable class.
+     *
      * @param  EloquentBuilder<\Illuminate\Database\Eloquent\Model>|Relation<\Illuminate\Database\Eloquent\Model, \Illuminate\Database\Eloquent\Model, mixed>|Collection<int, mixed>  $source
      */
     public function fromExportable(Exportable $exportable, EloquentBuilder|Relation|Collection $source): self
@@ -88,7 +111,13 @@ final class SheetBuilder
         return $this->fromQuery($source);
     }
 
+    // ──────────────────────────────────────────
+    // Column configuration
+    // ──────────────────────────────────────────
+
     /**
+     * Set the column header labels.
+     *
      * @param  array<int, string>  $headers
      */
     public function withHeaders(array $headers): self
@@ -98,6 +127,9 @@ final class SheetBuilder
         return $this;
     }
 
+    /**
+     * Set the callback that maps each data row to an array of cell values.
+     */
     public function withMapping(Closure $callback): self
     {
         $this->mappingCallback = $callback;
@@ -105,13 +137,23 @@ final class SheetBuilder
         return $this;
     }
 
-    public function title(string $title): self
+    // ──────────────────────────────────────────
+    // Sheet configuration
+    // ──────────────────────────────────────────
+
+    /**
+     * Set the sheet tab title (visible in multi-sheet workbooks).
+     */
+    public function withTitle(string $title): self
     {
-        $this->title = $title;
+        $this->sheetTitle = $title;
 
         return $this;
     }
 
+    /**
+     * Include a serial number column as the first column.
+     */
     public function withSerialNumber(bool $include = true): self
     {
         $this->includeSerialNumber = $include;
@@ -119,13 +161,19 @@ final class SheetBuilder
         return $this;
     }
 
-    public function withStyleConfig(StyleConfig $config): self
+    /**
+     * Override the default styling for this sheet.
+     */
+    public function withStyling(StyleConfig $config): self
     {
         $this->styleConfig = $config;
 
         return $this;
     }
 
+    /**
+     * Set the number of rows processed per chunk (query exports only).
+     */
     public function withChunkSize(int $size): self
     {
         $this->chunkSize = $size;
@@ -133,15 +181,20 @@ final class SheetBuilder
         return $this;
     }
 
+    /**
+     * Limit the total number of rows exported.
+     */
     public function withLimit(?int $limit): self
     {
-        $this->limit = $limit;
+        $this->rowLimit = $limit;
 
         return $this;
     }
 
     /**
-     * @param  array<string, string>  $formats
+     * Set column number/date formats.
+     *
+     * @param  array<string, string>  $formats  Keyed by column letter.
      */
     public function withColumnFormats(array $formats): self
     {
@@ -151,7 +204,9 @@ final class SheetBuilder
     }
 
     /**
-     * @param  array<string, float|int>  $widths
+     * Set explicit column widths.
+     *
+     * @param  array<string, float|int>  $widths  Keyed by column letter.
      */
     public function withColumnWidths(array $widths): self
     {
@@ -161,100 +216,112 @@ final class SheetBuilder
     }
 
     /**
+     * Set document metadata properties.
+     *
      * @param  array<string, string>  $properties
      */
     public function withProperties(array $properties): self
     {
-        $this->properties = $properties;
+        $this->documentProperties = $properties;
 
         return $this;
     }
 
-    /**
-     * @throws ExportException
-     */
-    public function validate(): void
-    {
-        if ($this->builder === null && $this->collection === null) {
-            throw ExportException::missingDataSource();
-        }
-
-        if ($this->headers === []) {
-            throw ExportException::missingHeaders();
-        }
-
-        if ($this->mappingCallback === null) {
-            throw ExportException::missingMapping();
-        }
-    }
+    // ──────────────────────────────────────────
+    // Build
+    // ──────────────────────────────────────────
 
     /**
-     * @throws ExportException
+     * Validate configuration and build the Maatwebsite export object.
+     *
+     * @throws FileExportException
      */
     public function build(): CollectionExport|QueryExport
     {
         $this->validate();
 
-        $styleConfig = $this->styleConfig ?? $this->defaultStyle;
+        $styling = $this->styleConfig ?? $this->defaultStyling;
 
         /** @var Closure $mappingCallback */
         $mappingCallback = $this->mappingCallback;
 
-        if ($this->builder !== null) {
-            return $this->buildQueryExport($styleConfig, $mappingCallback);
+        if ($this->queryBuilder !== null) {
+            return $this->buildQueryExport($styling, $mappingCallback);
         }
 
-        return $this->buildCollectionExport($styleConfig, $mappingCallback);
+        return $this->buildCollectionExport($styling, $mappingCallback);
     }
 
-    private function buildQueryExport(StyleConfig $styleConfig, Closure $mappingCallback): QueryExport
+    /**
+     * @throws FileExportException
+     */
+    public function validate(): void
+    {
+        if ($this->queryBuilder === null && $this->collection === null) {
+            throw FileExportException::missingDataSource();
+        }
+
+        if ($this->headers === []) {
+            throw FileExportException::missingHeaders();
+        }
+
+        if ($this->mappingCallback === null) {
+            throw FileExportException::missingMapping();
+        }
+    }
+
+    // ──────────────────────────────────────────
+    // Internal builders
+    // ──────────────────────────────────────────
+
+    private function buildQueryExport(StyleConfig $styling, Closure $mappingCallback): QueryExport
     {
         /** @var EloquentBuilder<\Illuminate\Database\Eloquent\Model>|Relation<\Illuminate\Database\Eloquent\Model, \Illuminate\Database\Eloquent\Model, mixed> $builder */
-        $builder = $this->builder;
+        $builder = $this->queryBuilder;
 
         $export = new QueryExport(
             builder: $builder,
             headers: $this->headers,
             mappingCallback: $mappingCallback,
             chunkSize: $this->chunkSize ?? $this->defaultChunkSize,
-            styleConfig: $styleConfig,
+            styleConfig: $styling,
         );
 
-        $this->applySharedConfig($export);
+        $this->applySharedSettings($export);
 
-        return $export->withLimit($this->limit);
+        return $export->withLimit($this->rowLimit);
     }
 
-    private function buildCollectionExport(StyleConfig $styleConfig, Closure $mappingCallback): CollectionExport
+    private function buildCollectionExport(StyleConfig $styling, Closure $mappingCallback): CollectionExport
     {
         $data = $this->collection ?? collect();
 
-        if ($this->limit !== null) {
-            $data = $data->take($this->limit);
+        if ($this->rowLimit !== null) {
+            $data = $data->take($this->rowLimit);
         }
 
         $export = new CollectionExport(
             data: $data,
             headers: $this->headers,
             mappingCallback: $mappingCallback,
-            styleConfig: $styleConfig,
+            styleConfig: $styling,
         );
 
-        $this->applySharedConfig($export);
+        $this->applySharedSettings($export);
 
         return $export;
     }
 
-    private function applySharedConfig(CollectionExport|QueryExport $export): void
+    private function applySharedSettings(CollectionExport|QueryExport $export): void
     {
         $export
             ->withSerialNumber($this->includeSerialNumber)
             ->withColumnFormats($this->columnFormats)
             ->withColumnWidths($this->columnWidths)
-            ->withProperties($this->properties);
+            ->withProperties($this->documentProperties);
 
-        if ($this->title !== null) {
-            $export->withTitle($this->title);
+        if ($this->sheetTitle !== null) {
+            $export->withTitle($this->sheetTitle);
         }
     }
 }

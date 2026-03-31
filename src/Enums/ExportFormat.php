@@ -6,6 +6,11 @@ namespace Anil\FileExport\Enums;
 
 use Maatwebsite\Excel\Excel;
 
+/**
+ * Supported file formats for export.
+ *
+ * PDF format requires the mpdf/mpdf package to be installed.
+ */
 enum ExportFormat: string
 {
     case XLSX = 'xlsx';
@@ -15,6 +20,9 @@ enum ExportFormat: string
     case HTML = 'html';
     case PDF = 'pdf';
 
+    /**
+     * Get the Maatwebsite writer type constant for this format.
+     */
     public function writerType(): string
     {
         return match ($this) {
@@ -27,6 +35,9 @@ enum ExportFormat: string
         };
     }
 
+    /**
+     * Get the file extension for this format.
+     */
     public function extension(): string
     {
         return $this->value;
