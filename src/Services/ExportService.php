@@ -4,19 +4,21 @@ declare(strict_types=1);
 
 namespace Anil\FileExport\Services;
 
+use Anil\FileExport\Builders\SheetBuilder;
 use Anil\FileExport\Contracts\Exportable;
 use Anil\FileExport\Contracts\FilenameGeneratorContract;
 use Anil\FileExport\Contracts\UrlResolverContract;
 use Anil\FileExport\DataTransferObjects\ExportConfig;
+use Anil\FileExport\DataTransferObjects\ExportResult;
 use Anil\FileExport\DataTransferObjects\StyleConfig;
 use Anil\FileExport\Enums\ExportFormat;
 use Anil\FileExport\Exceptions\ExportException;
 use Anil\FileExport\Exports\CollectionExport;
+use Anil\FileExport\Exports\MultiSheetExport;
 use Anil\FileExport\Exports\QueryExport;
 use Closure;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Eloquent\Relations\Relation;
-use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Collection;
 use Maatwebsite\Excel\Facades\Excel;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
@@ -24,16 +26,10 @@ use Symfony\Component\HttpFoundation\Response;
 
 final class ExportService
 {
-    /** @var array<int, string> */
-    private array $headers = [];
+    private SheetBuilder $defaultSheet;
 
-    private ?Closure $mappingCallback = null;
-
-    /** @var EloquentBuilder<\Illuminate\Database\Eloquent\Model>|Relation<\Illuminate\Database\Eloquent\Model, \Illuminate\Database\Eloquent\Model, mixed>|null */
-    private EloquentBuilder|Relation|null $builder = null;
-
-    /** @var Collection<int, mixed>|null */
-    private ?Collection $collection = null;
+    /** @var array<int, SheetBuilder> */
+    private array $sheets = [];
 
     private ExportFormat $format;
 
@@ -41,16 +37,8 @@ final class ExportService
 
     private ?string $disk = null;
 
-    private bool $includeSerialNumber = false;
-
-    private ?StyleConfig $styleConfig = null;
-
-    private ?int $chunkSize = null;
-
-    private ?int $limit = null;
-
     /** @var array<string, string> */
-    private array $columnFormats = [];
+    private array $documentProperties = [];
 
     public function __construct(
         private readonly ExportConfig $config,
@@ -59,15 +47,19 @@ final class ExportService
     ) {
         $this->format = $this->config->defaultFormat;
         $this->disk = $this->config->disk;
+        $this->defaultSheet = new SheetBuilder($this->config->styling, $this->config->chunkSize);
     }
+
+    // ──────────────────────────────────────────
+    // Single-sheet data source (delegates to defaultSheet)
+    // ──────────────────────────────────────────
 
     /**
      * @param  EloquentBuilder<\Illuminate\Database\Eloquent\Model>|Relation<\Illuminate\Database\Eloquent\Model, \Illuminate\Database\Eloquent\Model, mixed>  $builder
      */
     public function fromQuery(EloquentBuilder|Relation $builder): self
     {
-        $this->builder = $builder;
-        $this->collection = null;
+        $this->defaultSheet->fromQuery($builder);
 
         return $this;
     }
@@ -77,8 +69,7 @@ final class ExportService
      */
     public function fromCollection(Collection $collection): self
     {
-        $this->collection = $collection;
-        $this->builder = null;
+        $this->defaultSheet->fromCollection($collection);
 
         return $this;
     }
@@ -88,32 +79,102 @@ final class ExportService
      */
     public function fromExportable(Exportable $exportable, EloquentBuilder|Relation|Collection $source): self
     {
-        $this->headers = $exportable->headers();
-        $this->mappingCallback = $exportable->map(...);
+        $this->defaultSheet->fromExportable($exportable, $source);
 
-        if ($source instanceof Collection) {
-            return $this->fromCollection($source);
-        }
-
-        return $this->fromQuery($source);
+        return $this;
     }
+
+    // ──────────────────────────────────────────
+    // Single-sheet configuration (delegates to defaultSheet)
+    // ──────────────────────────────────────────
 
     /**
      * @param  array<int, string>  $headers
      */
     public function withHeaders(array $headers): self
     {
-        $this->headers = $headers;
+        $this->defaultSheet->withHeaders($headers);
 
         return $this;
     }
 
     public function withMapping(Closure $callback): self
     {
-        $this->mappingCallback = $callback;
+        $this->defaultSheet->withMapping($callback);
 
         return $this;
     }
+
+    public function withSerialNumber(bool $include = true): self
+    {
+        $this->defaultSheet->withSerialNumber($include);
+
+        return $this;
+    }
+
+    public function withStyleConfig(StyleConfig $styleConfig): self
+    {
+        $this->defaultSheet->withStyleConfig($styleConfig);
+
+        return $this;
+    }
+
+    public function withChunkSize(int $size): self
+    {
+        $this->defaultSheet->withChunkSize($size);
+
+        return $this;
+    }
+
+    public function withLimit(?int $limit): self
+    {
+        $this->defaultSheet->withLimit($limit);
+
+        return $this;
+    }
+
+    /**
+     * @param  array<string, string>  $formats
+     */
+    public function withColumnFormats(array $formats): self
+    {
+        $this->defaultSheet->withColumnFormats($formats);
+
+        return $this;
+    }
+
+    /**
+     * @param  array<string, float|int>  $widths
+     */
+    public function withColumnWidths(array $widths): self
+    {
+        $this->defaultSheet->withColumnWidths($widths);
+
+        return $this;
+    }
+
+    // ──────────────────────────────────────────
+    // Multi-sheet
+    // ──────────────────────────────────────────
+
+    /**
+     * Add a sheet using a closure that receives a SheetBuilder.
+     *
+     * @param  Closure(SheetBuilder): void  $configurator
+     */
+    public function addSheet(string $title, Closure $configurator): self
+    {
+        $sheet = new SheetBuilder($this->config->styling, $this->config->chunkSize);
+        $sheet->title($title);
+        $configurator($sheet);
+        $this->sheets[] = $sheet;
+
+        return $this;
+    }
+
+    // ──────────────────────────────────────────
+    // File-level configuration
+    // ──────────────────────────────────────────
 
     public function format(ExportFormat $format): self
     {
@@ -136,51 +197,27 @@ final class ExportService
         return $this;
     }
 
-    public function withSerialNumber(bool $include = true): self
-    {
-        $this->includeSerialNumber = $include;
-
-        return $this;
-    }
-
-    public function withStyleConfig(StyleConfig $styleConfig): self
-    {
-        $this->styleConfig = $styleConfig;
-
-        return $this;
-    }
-
-    public function withChunkSize(int $size): self
-    {
-        $this->chunkSize = $size;
-
-        return $this;
-    }
-
-    public function withLimit(?int $limit): self
-    {
-        $this->limit = $limit;
-
-        return $this;
-    }
-
     /**
-     * @param  array<string, string>  $formats
+     * @param  array<string, string>  $properties  e.g. ['title' => '...', 'creator' => '...', 'description' => '...']
      */
-    public function withColumnFormats(array $formats): self
+    public function withDocumentProperties(array $properties): self
     {
-        $this->columnFormats = $formats;
+        $this->documentProperties = $properties;
 
         return $this;
     }
 
+    // ──────────────────────────────────────────
+    // Output methods
+    // ──────────────────────────────────────────
+
     /**
+     * Store the export to disk and return an ExportResult.
+     *
      * @throws ExportException
      */
-    public function store(): JsonResponse
+    public function store(): ExportResult
     {
-        $this->validate();
-
         $exportClass = $this->buildExportClass();
         $filename = $this->filenameGenerator->generate($this->filename, $this->format);
         $path = $this->config->path.'/'.$filename;
@@ -194,21 +231,21 @@ final class ExportService
 
         $url = $this->urlResolver->resolve($disk, $path);
 
-        return new JsonResponse([
-            'success' => true,
-            'url' => $url,
-            'filename' => $filename,
-            'message' => 'File exported successfully.',
-        ]);
+        return new ExportResult(
+            filename: $filename,
+            url: $url,
+            path: $path,
+            disk: $disk,
+        );
     }
 
     /**
+     * Download the export directly as a browser response.
+     *
      * @throws ExportException
      */
     public function download(): BinaryFileResponse
     {
-        $this->validate();
-
         $exportClass = $this->buildExportClass();
         $filename = $this->filenameGenerator->generate($this->filename, $this->format);
 
@@ -217,12 +254,12 @@ final class ExportService
     }
 
     /**
+     * Queue the export for background processing.
+     *
      * @throws ExportException
      */
-    public function queue(): JsonResponse
+    public function queue(): ExportResult
     {
-        $this->validate();
-
         $exportClass = $this->buildExportClass();
         $filename = $this->filenameGenerator->generate($this->filename, $this->format);
         $path = $this->config->path.'/'.$filename;
@@ -230,84 +267,55 @@ final class ExportService
 
         Excel::queue($exportClass, $path, $disk, $this->format->writerType());
 
-        return new JsonResponse([
-            'success' => true,
-            'filename' => $filename,
-            'message' => 'Export has been queued for processing.',
-        ], Response::HTTP_ACCEPTED);
+        return new ExportResult(
+            filename: $filename,
+            path: $path,
+            disk: $disk,
+        );
+    }
+
+    /**
+     * Get the raw binary content of the export.
+     *
+     * @throws ExportException
+     */
+    public function raw(): string
+    {
+        $exportClass = $this->buildExportClass();
+
+        return Excel::raw($exportClass, $this->format->writerType());
+    }
+
+    // ──────────────────────────────────────────
+    // Internal
+    // ──────────────────────────────────────────
+
+    /**
+     * @throws ExportException
+     */
+    private function buildExportClass(): CollectionExport|QueryExport|MultiSheetExport
+    {
+        if ($this->sheets !== []) {
+            return $this->buildMultiSheetExport();
+        }
+
+        return $this->defaultSheet->build();
     }
 
     /**
      * @throws ExportException
      */
-    private function validate(): void
+    private function buildMultiSheetExport(): MultiSheetExport
     {
-        if ($this->builder === null && $this->collection === null) {
-            throw ExportException::missingDataSource();
+        $builtSheets = [];
+
+        foreach ($this->sheets as $sheet) {
+            $builtSheets[] = $sheet->build();
         }
 
-        if ($this->headers === []) {
-            throw ExportException::missingHeaders();
-        }
-
-        if ($this->mappingCallback === null) {
-            throw ExportException::missingMapping();
-        }
-    }
-
-    private function buildExportClass(): CollectionExport|QueryExport
-    {
-        $styleConfig = $this->styleConfig ?? $this->config->styling;
-
-        if ($this->builder !== null) {
-            return $this->buildQueryExport($styleConfig);
-        }
-
-        return $this->buildCollectionExport($styleConfig);
-    }
-
-    private function buildQueryExport(StyleConfig $styleConfig): QueryExport
-    {
-        /** @var Closure $mappingCallback */
-        $mappingCallback = $this->mappingCallback;
-
-        /** @var EloquentBuilder<\Illuminate\Database\Eloquent\Model>|Relation<\Illuminate\Database\Eloquent\Model, \Illuminate\Database\Eloquent\Model, mixed> $builder */
-        $builder = $this->builder;
-
-        $export = new QueryExport(
-            builder: $builder,
-            headers: $this->headers,
-            mappingCallback: $mappingCallback,
-            chunkSize: $this->chunkSize ?? $this->config->chunkSize,
-            styleConfig: $styleConfig,
+        return new MultiSheetExport(
+            sheets: $builtSheets,
+            documentProperties: $this->documentProperties,
         );
-
-        return $export
-            ->withSerialNumber($this->includeSerialNumber)
-            ->withColumnFormats($this->columnFormats)
-            ->withLimit($this->limit);
-    }
-
-    private function buildCollectionExport(StyleConfig $styleConfig): CollectionExport
-    {
-        /** @var Closure $mappingCallback */
-        $mappingCallback = $this->mappingCallback;
-
-        $data = $this->collection ?? collect();
-
-        if ($this->limit !== null) {
-            $data = $data->take($this->limit);
-        }
-
-        $export = new CollectionExport(
-            data: $data,
-            headers: $this->headers,
-            mappingCallback: $mappingCallback,
-            styleConfig: $styleConfig,
-        );
-
-        return $export
-            ->withSerialNumber($this->includeSerialNumber)
-            ->withColumnFormats($this->columnFormats);
     }
 }

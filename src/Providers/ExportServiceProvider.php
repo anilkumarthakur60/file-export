@@ -28,13 +28,7 @@ final class ExportServiceProvider extends ServiceProvider
         $this->app->bind(FilenameGeneratorContract::class, FilenameGenerator::class);
         $this->app->bind(UrlResolverContract::class, UrlResolver::class);
 
-        $this->app->bind(ExportService::class, function (): ExportService {
-            return new ExportService(
-                config: $this->app->make(ExportConfig::class),
-                filenameGenerator: $this->app->make(FilenameGeneratorContract::class),
-                urlResolver: $this->app->make(UrlResolverContract::class),
-            );
-        });
+        $this->app->bind(ExportService::class);
     }
 
     public function boot(): void

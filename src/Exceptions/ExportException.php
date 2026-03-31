@@ -28,8 +28,13 @@ final class ExportException extends RuntimeException
         return new self("Failed to store export file: {$filename}");
     }
 
-    public static function rowLimitExceeded(int $count, int $maxRows): self
+    public static function emptySheets(): self
     {
-        return new self("Row count ({$count}) exceeds the configured maximum ({$maxRows}). Increase max_rows in config or use withLimit().");
+        return new self('No sheets configured. Call addSheet() at least once before exporting.');
+    }
+
+    public static function conflictingModes(): self
+    {
+        return new self('Cannot mix single-sheet (fromQuery/fromCollection) with multi-sheet (addSheet). Use one or the other.');
     }
 }

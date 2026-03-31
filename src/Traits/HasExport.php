@@ -5,11 +5,11 @@ declare(strict_types=1);
 namespace Anil\FileExport\Traits;
 
 use Anil\FileExport\Contracts\Exportable;
+use Anil\FileExport\DataTransferObjects\ExportResult;
 use Anil\FileExport\Services\ExportService;
 use Closure;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Eloquent\Relations\Relation;
-use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Collection;
 
 /**
@@ -23,7 +23,7 @@ trait HasExport
      * @param  EloquentBuilder<\Illuminate\Database\Eloquent\Model>|Relation<\Illuminate\Database\Eloquent\Model, \Illuminate\Database\Eloquent\Model, mixed>  $builder
      * @param  array<int, string>  $headers
      */
-    protected function export(EloquentBuilder|Relation $builder, array $headers, Closure $mapping): JsonResponse
+    protected function export(EloquentBuilder|Relation $builder, array $headers, Closure $mapping): ExportResult
     {
         return $this->exporter()
             ->fromQuery($builder)
@@ -38,7 +38,7 @@ trait HasExport
      * @param  Collection<int, mixed>  $collection
      * @param  array<int, string>  $headers
      */
-    protected function exportCollection(Collection $collection, array $headers, Closure $mapping): JsonResponse
+    protected function exportCollection(Collection $collection, array $headers, Closure $mapping): ExportResult
     {
         return $this->exporter()
             ->fromCollection($collection)
@@ -52,7 +52,7 @@ trait HasExport
      *
      * @param  EloquentBuilder<\Illuminate\Database\Eloquent\Model>|Relation<\Illuminate\Database\Eloquent\Model, \Illuminate\Database\Eloquent\Model, mixed>|Collection<int, mixed>  $source
      */
-    protected function exportUsing(Exportable $exportable, EloquentBuilder|Relation|Collection $source): JsonResponse
+    protected function exportUsing(Exportable $exportable, EloquentBuilder|Relation|Collection $source): ExportResult
     {
         return $this->exporter()
             ->fromExportable($exportable, $source)

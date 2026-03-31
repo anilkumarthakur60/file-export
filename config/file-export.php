@@ -18,7 +18,7 @@ return [
     | Export Path Prefix
     |--------------------------------------------------------------------------
     |
-    | The directory prefix for stored export files.
+    | The directory prefix for stored export files on disk.
     |
     */
     'path' => env('FILE_EXPORT_PATH', 'exports'),
@@ -40,7 +40,7 @@ return [
     |--------------------------------------------------------------------------
     |
     | The default format when none is specified.
-    | Supported: "xlsx", "csv", "pdf"
+    | Supported: "xlsx", "csv", "tsv", "ods", "html", "pdf"
     | PDF requires mpdf/mpdf to be installed.
     |
     */
@@ -63,7 +63,7 @@ return [
     |--------------------------------------------------------------------------
     |
     | For query-based exports, this is the number of rows processed per
-    | chunk. Increase for speed, decrease for memory efficiency.
+    | chunk. Higher = faster, lower = less memory.
     |
     */
     'chunk_size' => (int) env('FILE_EXPORT_CHUNK_SIZE', 1000),
@@ -84,7 +84,7 @@ return [
     |--------------------------------------------------------------------------
     |
     | Default styling applied to all exports. Individual exports can
-    | override these via withStyleConfig().
+    | override these at runtime via withStyleConfig().
     |
     */
     'styling' => [

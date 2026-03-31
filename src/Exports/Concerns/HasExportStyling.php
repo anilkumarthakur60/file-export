@@ -21,6 +21,14 @@ trait HasExportStyling
     /** @var array<string, string> */
     protected array $columnFormats = [];
 
+    private ?string $sheetTitle = null;
+
+    /** @var array<string, float|int> */
+    private array $columnWidths = [];
+
+    /** @var array<string, string> */
+    private array $properties = [];
+
     public function withSerialNumber(bool $include = true): static
     {
         $this->includeSerialNumber = $include;
@@ -45,12 +53,60 @@ trait HasExportStyling
         return $this;
     }
 
+    public function withTitle(string $title): static
+    {
+        $this->sheetTitle = $title;
+
+        return $this;
+    }
+
+    /**
+     * @param  array<string, float|int>  $widths  e.g. ['A' => 20, 'B' => 30.5]
+     */
+    public function withColumnWidths(array $widths): static
+    {
+        $this->columnWidths = $widths;
+
+        return $this;
+    }
+
+    /**
+     * @param  array<string, string>  $properties  e.g. ['title' => 'Report', 'creator' => 'System']
+     */
+    public function withProperties(array $properties): static
+    {
+        $this->properties = $properties;
+
+        return $this;
+    }
+
     /**
      * @return array<string, string>
      */
     public function columnFormats(): array
     {
         return $this->columnFormats;
+    }
+
+    public function title(): string
+    {
+        return $this->sheetTitle ?? 'Sheet1';
+    }
+
+    /**
+     * @return array<string, float|int>
+     */
+    public function columnWidths(): array
+    {
+        return $this->columnWidths;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    public function properties(): array
+    {
+        return $this->properties;
     }
 
     /**
@@ -61,6 +117,7 @@ trait HasExportStyling
         /** @var array<string, array<string, mixed>> $headerStyle */
         $headerStyle = [];
 
+        /** @var array<string, mixed> $font */
         $font = [];
 
         if ($this->styleConfig->headerBold) {
