@@ -30,6 +30,7 @@ in the background, email it, or grab the raw bytes.
 - [Custom Styling](#custom-styling)
 - [Swapping Implementations](#swapping-implementations)
 - [Conditionals & Macros](#conditionals--macros)
+- [Runtime Overrides](#runtime-overrides)
 - [Configuration Reference](#configuration-reference)
 - [API Reference](#api-reference)
 - [Testing](#testing)
@@ -526,6 +527,59 @@ $exporter->fromQuery(User::query())->withHeaders([...])->withMapping(...)->asRep
 
 ---
 
+## Runtime Overrides
+
+Everything in `config/file-export.php` is a *default* — every value can be overridden from
+code, per export, without touching the config file. This is the idiomatic way to vary behavior
+at runtime (per user, per request, per report type):
+
+```php
+use Anil\FileExport\DataTransferObjects\StyleConfig;
+use Anil\FileExport\DataTransferObjects\CsvSettings;
+
+$exporter->fromQuery(User::query())
+    ->withHeaders(['Name'])
+    ->withMapping(fn ($u) => [$u->name])
+
+    ->disk('s3')                       // config: disk
+    ->path("reports/{$tenant->id}")    // config: path
+    ->format(ExportFormat::CSV)        // config: default_format
+    ->withChunkSize(2000)              // config: chunk_size
+    ->maxRows(null)                    // config: max_rows (null = unlimited here)
+    ->autoSplit(true, 500_000)         // config: auto_split.*
+    ->expireAfterDays(30)              // config: expire_days (signed-URL lifetime)
+    ->withStyling($style)              // config: styling.*
+    ->withCsvSettings($csv)            // config: csv.*
+    ->withProperties([...])            // config: properties.*
+    ->onConnection('redis')->onQueue('exports') // config: queue.*
+    ->notifyMail('ops@acme.test')
+    ->mailSubject('Tenant export')     // config: mail.subject
+    ->mailAttachThreshold(5_000_000)   // config: mail.attach_threshold
+    ->store();
+```
+
+| Override | Replaces config key |
+| --- | --- |
+| `disk(string)` | `disk` |
+| `path(string)` | `path` |
+| `format(ExportFormat)` | `default_format` |
+| `withChunkSize(int)` | `chunk_size` |
+| `maxRows(?int)` | `max_rows` |
+| `autoSplit(?bool, ?int)` | `auto_split.enabled`, `auto_split.rows_per_sheet` |
+| `expireAfterDays(int)` | `expire_days` |
+| `withStyling(StyleConfig)` | `styling.*` |
+| `withCsvSettings(CsvSettings)` | `csv.*` |
+| `withProperties(array)` | `properties.*` |
+| `onConnection(?string)` / `onQueue(?string)` | `queue.connection` / `queue.queue` |
+| `mailSubject(string)` | `mail.subject` |
+| `mailAttachThreshold(int)` | `mail.attach_threshold` |
+
+> Need new **defaults** for every export in a request (not per-export)? Rebind the
+> `ExportConfig` singleton in a service provider — it's the single source of truth that all
+> exporters resolve from.
+
+---
+
 ## Configuration Reference
 
 ```php
@@ -641,6 +695,9 @@ Every value supports an `env()` override (see the keys above).
 | `format(ExportFormat $format)` | Output format. |
 | `filename(string $name)` | Custom filename (timestamp appended). |
 | `disk(string $disk)` | Target filesystem disk. |
+| `path(string $path)` | Override the storage directory. |
+| `maxRows(?int $maxRows)` | Override the row guard (null = unlimited). |
+| `expireAfterDays(int $days)` | Override the signed-URL lifetime. |
 | `autoSplit(?bool $enabled = true, ?int $rowsPerSheet = null)` | Per-export auto-split control. |
 | `addSheet(string $title, Closure $cfg)` | Add a sheet to a multi-sheet workbook. |
 
@@ -648,6 +705,8 @@ Every value supports an `env()` override (see the keys above).
 | Method | Description |
 | --- | --- |
 | `notifyMail(string\|array $recipients)` | Email the export (attach or link). |
+| `mailSubject(string $subject)` | Override the email subject. |
+| `mailAttachThreshold(int $bytes)` | Override the attach-vs-link size threshold. |
 | `notify(object $notifiable, Notification $n)` | Send a Notification on completion. |
 | `onCompletion(Closure $cb)` | Run a callback with the `ExportResult`. |
 | `withCompletionEvent(bool = true)` | Toggle the `ExportCompleted` event. |

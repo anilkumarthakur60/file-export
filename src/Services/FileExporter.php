@@ -64,6 +64,19 @@ final class FileExporter
 
     private ?string $disk = null;
 
+    // Runtime overrides for config values (null = fall back to config).
+    private ?string $pathOverride = null;
+
+    private bool $maxRowsOverridden = false;
+
+    private ?int $maxRowsOverride = null;
+
+    private ?int $expireDaysOverride = null;
+
+    private ?string $mailSubjectOverride = null;
+
+    private ?int $mailAttachThresholdOverride = null;
+
     /** @var array<string, string> */
     private array $documentProperties = [];
 
@@ -328,6 +341,37 @@ final class FileExporter
     }
 
     /**
+     * Override the storage directory (relative to the disk root) at runtime.
+     */
+    public function path(string $path): self
+    {
+        $this->pathOverride = trim($path, '/');
+
+        return $this;
+    }
+
+    /**
+     * Override the maximum-rows guard at runtime (null = unlimited for this export).
+     */
+    public function maxRows(?int $maxRows): self
+    {
+        $this->maxRowsOverridden = true;
+        $this->maxRowsOverride = $maxRows;
+
+        return $this;
+    }
+
+    /**
+     * Override the signed download-URL lifetime (in days) for this export.
+     */
+    public function expireAfterDays(int $days): self
+    {
+        $this->expireDaysOverride = $days;
+
+        return $this;
+    }
+
+    /**
      * Set document metadata properties embedded in the file.
      *
      * @param  array<string, string>  $properties  e.g., ['title' => 'Report', 'creator' => 'System']
@@ -404,6 +448,26 @@ final class FileExporter
     }
 
     /**
+     * Override the subject line of the export email at runtime.
+     */
+    public function mailSubject(string $subject): self
+    {
+        $this->mailSubjectOverride = $subject;
+
+        return $this;
+    }
+
+    /**
+     * Override the attach-vs-link size threshold (bytes) for the export email.
+     */
+    public function mailAttachThreshold(int $bytes): self
+    {
+        $this->mailAttachThresholdOverride = $bytes;
+
+        return $this;
+    }
+
+    /**
      * Toggle dispatching the ExportCompleted event (enabled by default).
      */
     public function withCompletionEvent(bool $enabled = true): self
@@ -446,7 +510,7 @@ final class FileExporter
     {
         $exportObject = $this->buildExportObject();
         $resolvedFilename = $this->filenameGenerator->generate($this->filename, $this->format);
-        $storagePath = $this->config->path.'/'.$resolvedFilename;
+        $storagePath = $this->resolveStoragePath($resolvedFilename);
         $storageDisk = $this->disk ?? $this->config->disk;
 
         $stored = $this->excel->store($exportObject, $storagePath, $storageDisk, $this->format->writerType());
@@ -455,7 +519,7 @@ final class FileExporter
             throw FileExportException::storageFailed($resolvedFilename);
         }
 
-        $downloadUrl = $this->urlResolver->resolve($storageDisk, $storagePath);
+        $downloadUrl = $this->urlResolver->resolve($storageDisk, $storagePath, $this->expireDaysOverride);
 
         $result = new ExportResult(
             filename: $resolvedFilename,
@@ -502,7 +566,7 @@ final class FileExporter
 
         $exportObject = $this->buildExportObject();
         $resolvedFilename = $this->filenameGenerator->generate($this->filename, $this->format);
-        $storagePath = $this->config->path.'/'.$resolvedFilename;
+        $storagePath = $this->resolveStoragePath($resolvedFilename);
         $storageDisk = $this->disk ?? $this->config->disk;
 
         $pending = $this->excel->queue($exportObject, $storagePath, $storageDisk, $this->format->writerType());
@@ -570,7 +634,16 @@ final class FileExporter
             $this->format,
             $this->autoSplitOverride ?? $this->config->autoSplit,
             $this->rowsPerSheetOverride ?? $this->config->rowsPerSheet,
+            $this->maxRowsOverridden ? $this->maxRowsOverride : $this->config->maxRows,
         );
+    }
+
+    /**
+     * Resolve the storage path, honouring a runtime path() override.
+     */
+    private function resolveStoragePath(string $filename): string
+    {
+        return ($this->pathOverride ?? $this->config->path).'/'.$filename;
     }
 
     /**
@@ -603,6 +676,8 @@ final class FileExporter
             notification: $this->notification,
             callback: $this->completionCallback,
             mailRecipients: $this->mailRecipients,
+            mailSubject: $this->mailSubjectOverride,
+            mailAttachThreshold: $this->mailAttachThresholdOverride,
         );
     }
 
@@ -617,6 +692,9 @@ final class FileExporter
             notification: $this->notification,
             callback: $this->completionCallback !== null ? new SerializableClosure($this->completionCallback) : null,
             mailRecipients: $this->mailRecipients,
+            mailSubject: $this->mailSubjectOverride,
+            mailAttachThreshold: $this->mailAttachThresholdOverride,
+            expiresInDays: $this->expireDaysOverride,
         );
     }
 
@@ -642,7 +720,6 @@ final class FileExporter
         return new SheetBuilder(
             defaultStyling: $this->config->styling,
             defaultChunkSize: $this->config->chunkSize,
-            maxRows: $this->config->maxRows,
             disableAutoSizeOnLargeSheets: $this->config->disableAutoSizeOnLargeSheets,
             disableStylingOnLargeSheets: $this->config->disableStylingOnLargeSheets,
             defaultCsv: $this->config->csv,

@@ -43,13 +43,16 @@ final class HandleExportCompletion implements ShouldQueue
         private readonly ?Notification $notification,
         private readonly ?SerializableClosure $callback,
         private readonly array $mailRecipients,
+        private readonly ?string $mailSubject = null,
+        private readonly ?int $mailAttachThreshold = null,
+        private readonly ?int $expiresInDays = null,
     ) {}
 
     public function handle(ExportCompletionHandler $handler, UrlResolver $urlResolver): void
     {
         $result = new ExportResult(
             filename: $this->filename,
-            url: $urlResolver->resolve($this->disk, $this->path),
+            url: $urlResolver->resolve($this->disk, $this->path, $this->expiresInDays),
             path: $this->path,
             disk: $this->disk,
         );
@@ -62,6 +65,8 @@ final class HandleExportCompletion implements ShouldQueue
             notification: $this->notification,
             callback: $callback instanceof \Closure ? $callback : null,
             mailRecipients: $this->mailRecipients,
+            mailSubject: $this->mailSubject,
+            mailAttachThreshold: $this->mailAttachThreshold,
         ));
     }
 }

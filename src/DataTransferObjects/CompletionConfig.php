@@ -22,6 +22,8 @@ final readonly class CompletionConfig
      * @param  Notification|null  $notification  The notification to send on completion.
      * @param  Closure|null  $callback  A callback invoked with the ExportResult on completion.
      * @param  array<int, string>  $mailRecipients  Email addresses that receive the export (attachment or link).
+     * @param  string|null  $mailSubject  Runtime subject override (null = config default).
+     * @param  int|null  $mailAttachThreshold  Runtime attach-vs-link threshold override in bytes (null = config default).
      */
     public function __construct(
         public bool $fireEvent = true,
@@ -29,6 +31,8 @@ final readonly class CompletionConfig
         public ?Notification $notification = null,
         public ?Closure $callback = null,
         public array $mailRecipients = [],
+        public ?string $mailSubject = null,
+        public ?int $mailAttachThreshold = null,
     ) {}
 
     /**

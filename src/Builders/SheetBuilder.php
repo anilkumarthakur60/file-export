@@ -68,7 +68,6 @@ final class SheetBuilder
     public function __construct(
         private readonly StyleConfig $defaultStyling,
         private readonly int $defaultChunkSize = 1000,
-        private readonly ?int $maxRows = 1000000,
         private readonly bool $disableAutoSizeOnLargeSheets = true,
         private readonly bool $disableStylingOnLargeSheets = true,
         private readonly CsvSettings $defaultCsv = new CsvSettings,
@@ -298,10 +297,11 @@ final class SheetBuilder
      *
      * @param  bool  $autoSplitEnabled  Whether oversized xlsx/ods query exports may split across sheets.
      * @param  int  $rowsPerSheet  Maximum rows per sheet before splitting.
+     * @param  int|null  $maxRows  Row guard for spreadsheet formats (null = unlimited).
      *
      * @throws FileExportException
      */
-    public function buildResolved(ExportFormat $format, bool $autoSplitEnabled, int $rowsPerSheet): CollectionExport|QueryExport|MultiSheetExport
+    public function buildResolved(ExportFormat $format, bool $autoSplitEnabled, int $rowsPerSheet, ?int $maxRows): CollectionExport|QueryExport|MultiSheetExport
     {
         $this->validate();
 
@@ -317,7 +317,7 @@ final class SheetBuilder
             if ($this->rowLimit !== null) {
                 $total = min($total, $this->rowLimit);
             }
-            $this->enforceMaxRows($total, $format);
+            $this->enforceMaxRows($total, $format, $maxRows);
 
             return $this->buildCollectionExport($styling, $mappingCallback);
         }
@@ -339,7 +339,7 @@ final class SheetBuilder
             return $this->buildSplitExport($styling, $mappingCallback, $this->queryBuilder, $total, $rowsPerSheet);
         }
 
-        $this->enforceMaxRows($total, $format);
+        $this->enforceMaxRows($total, $format, $maxRows);
 
         return $this->buildQueryExport($styling, $mappingCallback);
     }
@@ -426,10 +426,10 @@ final class SheetBuilder
      *
      * @throws FileExportException
      */
-    private function enforceMaxRows(int $total, ExportFormat $format): void
+    private function enforceMaxRows(int $total, ExportFormat $format, ?int $maxRows): void
     {
-        if ($this->maxRows !== null && $format->hasRowLimit() && $total > $this->maxRows) {
-            throw FileExportException::rowLimitExceeded($total, $this->maxRows);
+        if ($maxRows !== null && $format->hasRowLimit() && $total > $maxRows) {
+            throw FileExportException::rowLimitExceeded($total, $maxRows);
         }
     }
 

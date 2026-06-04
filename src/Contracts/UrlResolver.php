@@ -17,7 +17,8 @@ interface UrlResolver
      *
      * @param  string  $disk  The filesystem disk name where the file is stored.
      * @param  string  $path  The file path relative to the disk root.
+     * @param  int|null  $expiresInDays  Signed-URL lifetime in days (cloud disks). Null = package default.
      * @return string  The download URL.
      */
-    public function resolve(string $disk, string $path): string;
+    public function resolve(string $disk, string $path, ?int $expiresInDays = null): string;
 }

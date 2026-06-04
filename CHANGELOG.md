@@ -32,6 +32,10 @@ v2 does **not** maintain backward compatibility with v1.
   (previously parsed but unused); set to `null` for unlimited CSV dumps.
 - **Conditionable & Macroable** — `->when()` / `->unless()` and
   `FileExporter::macro()` for fluent, extensible pipelines.
+- **Runtime overrides for every config value** — `path()`, `maxRows()`,
+  `expireAfterDays()`, `mailSubject()`, `mailAttachThreshold()` join the existing
+  per-export setters so nothing is locked to the config file; config values are
+  now purely defaults.
 - **Richer `ExportResult`** — now also exposes `format` and `mimeType`.
 - **Test suite** — comprehensive [Pest](https://pestphp.com/) suite (runs in
   parallel), in addition to PHPStan level max.

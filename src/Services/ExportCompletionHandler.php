@@ -54,8 +54,8 @@ final class ExportCompletionHandler
                 result: $result,
                 disk: $result->disk,
                 path: $result->path,
-                attachThreshold: $this->config->mailAttachThreshold,
-                mailSubject: $this->config->mailSubject,
+                attachThreshold: $completion->mailAttachThreshold ?? $this->config->mailAttachThreshold,
+                mailSubject: $completion->mailSubject ?? $this->config->mailSubject,
             ));
         }
     }

@@ -27,12 +27,12 @@ final class TemporaryUrlResolver implements UrlResolver
     /**
      * {@inheritDoc}
      */
-    public function resolve(string $disk, string $path): string
+    public function resolve(string $disk, string $path, ?int $expiresInDays = null): string
     {
         $storage = $this->filesystemManager->disk($disk);
 
         try {
-            $expiresAt = Carbon::now()->addDays($this->config->expireDays);
+            $expiresAt = Carbon::now()->addDays($expiresInDays ?? $this->config->expireDays);
 
             return $storage->temporaryUrl($path, $expiresAt);
         } catch (RuntimeException) {
