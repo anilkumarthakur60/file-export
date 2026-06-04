@@ -1,11 +1,12 @@
 {
   "name": "anil/file-export",
-  "description": "A powerful, fluent file export package for Laravel, built on PhpSpreadsheet with its own export engine.",
+  "description": "A powerful, fluent file export and import package for Laravel, built on PhpSpreadsheet with its own engine.",
   "keywords": [
     "anil",
     "csv",
     "excel",
     "export",
+    "import",
     "laravel",
     "phpspreadsheet",
     "spreadsheet",
