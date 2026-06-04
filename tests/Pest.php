@@ -11,7 +11,7 @@ use Anil\FileExport\Tests\TestCase;
 | Test Case
 |--------------------------------------------------------------------------
 |
-| Bind the Testbench-based TestCase (Maatwebsite + package providers, in-memory
+| Bind the Testbench-based TestCase (package provider, in-memory
 | sqlite, local disk) to every test in the Feature suite.
 |
 */

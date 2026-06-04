@@ -4,15 +4,18 @@ declare(strict_types=1);
 
 namespace Anil\FileExport\Exports;
 
-use Maatwebsite\Excel\Concerns\ShouldAutoSize;
-
 /**
- * Exports data from an Eloquent query builder with automatic chunking and
- * auto-sized columns.
+ * Exports an Eloquent query with auto-sized columns.
  *
- * Suitable for small-to-large datasets where the row count fits comfortably
- * within a single sheet. For exports large enough to be auto-split (or where
- * per-cell column measuring would be prohibitively slow), LargeQueryExport is
- * used instead — it is identical but omits ShouldAutoSize.
+ * Suitable for small-to-large datasets that fit within a single sheet. For
+ * exports large enough to be auto-split (or where per-cell column measuring
+ * would be prohibitively slow), LargeQueryExport is used — it is identical but
+ * does not auto-size.
  */
-class QueryExport extends BaseQueryExport implements ShouldAutoSize {}
+class QueryExport extends BaseQueryExport
+{
+    public function autoSize(): bool
+    {
+        return true;
+    }
+}

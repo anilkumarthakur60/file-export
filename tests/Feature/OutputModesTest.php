@@ -4,12 +4,15 @@ declare(strict_types=1);
 
 use Anil\FileExport\Enums\ExportFormat;
 use Anil\FileExport\Exceptions\FileExportException;
+use Anil\FileExport\Jobs\PerformExport;
 use Anil\FileExport\Tests\Fixtures\User;
 use Illuminate\Support\Collection;
-use Maatwebsite\Excel\Facades\Excel;
+use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Storage;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
 it('stores a query export to disk', function (): void {
-    Excel::fake();
+    Storage::fake('local');
     seedUsers(3);
 
     $result = fileExporter()
@@ -18,17 +21,17 @@ it('stores a query export to disk', function (): void {
         ->withMapping(fn (User $u) => [$u->name, $u->email])
         ->store();
 
-    Excel::assertStored('exports/export.xlsx', 'local');
-    $this->assertSame('export.xlsx', $result->filename);
-    $this->assertSame('exports/export.xlsx', $result->path);
-    $this->assertSame('local', $result->disk);
+    Storage::disk('local')->assertExists('exports/export.xlsx');
+    expect($result->filename)->toBe('export.xlsx')
+        ->and($result->path)->toBe('exports/export.xlsx')
+        ->and($result->disk)->toBe('local')
+        ->and($result->format)->toBe('xlsx');
 });
 
 it('downloads an export', function (): void {
-    Excel::fake();
     seedUsers(2);
 
-    fileExporter()
+    $response = fileExporter()
         ->fromCollection(new Collection([['n' => 'A'], ['n' => 'B']]))
         ->withHeaders(['Name'])
         ->withMapping(fn (array $row) => [$row['n']])
@@ -36,11 +39,14 @@ it('downloads an export', function (): void {
         ->format(ExportFormat::CSV)
         ->download();
 
-    Excel::assertDownloaded('people.csv');
+    expect($response)->toBeInstanceOf(BinaryFileResponse::class)
+        ->and($response->getStatusCode())->toBe(200)
+        ->and($response->headers->get('content-disposition'))->toContain('people.csv')
+        ->and($response->headers->get('content-type'))->toContain('text/csv');
 });
 
 it('queues an export', function (): void {
-    Excel::fake();
+    Queue::fake();
     seedUsers(2);
 
     fileExporter()
@@ -49,7 +55,21 @@ it('queues an export', function (): void {
         ->withMapping(fn (User $u) => [$u->name])
         ->queue();
 
-    Excel::assertQueued('exports/export.xlsx', 'local');
+    Queue::assertPushed(PerformExport::class);
+});
+
+it('runs a queued export end to end on the sync queue', function (): void {
+    Storage::fake('local');
+    seedUsers(3);
+
+    fileExporter()
+        ->fromQuery(fn () => User::query())
+        ->withHeaders(['Name'])
+        ->withMapping(fn (User $u) => [$u->name])
+        ->queue();
+
+    // QUEUE_CONNECTION=sync runs PerformExport inline: the file is rendered and stored.
+    Storage::disk('local')->assertExists('exports/export.xlsx');
 });
 
 it('rejects queueing a live query builder', function (): void {
@@ -73,8 +93,8 @@ it('returns raw binary content', function (): void {
         ->format(ExportFormat::CSV)
         ->raw();
 
-    $this->assertIsString($raw);
-    $this->assertStringContainsString('User 1', $raw);
+    expect($raw)->toBeString()
+        ->and($raw)->toContain('User 1');
 });
 
 it('throws when no data source', function (): void {

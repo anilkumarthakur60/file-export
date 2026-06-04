@@ -4,13 +4,12 @@ declare(strict_types=1);
 
 use Anil\FileExport\Enums\ExportFormat;
 use Anil\FileExport\Exceptions\FileExportException;
-use Anil\FileExport\Exports\CollectionExport;
-use Anil\FileExport\Exports\MultiSheetExport;
 use Anil\FileExport\Tests\Fixtures\User;
-use Maatwebsite\Excel\Facades\Excel;
+use Illuminate\Support\Facades\Storage;
+use PhpOffice\PhpSpreadsheet\IOFactory;
 
 it('splits an oversized query export into multiple sheets', function (): void {
-    Excel::fake();
+    Storage::fake('local');
     seedUsers(10);
 
     fileExporter()
@@ -20,16 +19,13 @@ it('splits an oversized query export into multiple sheets', function (): void {
         ->autoSplit(true, 4) // 10 rows / 4 per sheet = 3 sheets
         ->store();
 
-    Excel::assertStored('exports/export.xlsx', 'local', function ($export): bool {
-        $this->assertInstanceOf(MultiSheetExport::class, $export);
-        $this->assertCount(3, $export->sheets());
+    $spreadsheet = IOFactory::load(Storage::disk('local')->path('exports/export.xlsx'));
 
-        return true;
-    });
+    expect($spreadsheet->getSheetCount())->toBe(3);
 });
 
 it('continues serial numbers across split sheets', function (): void {
-    Excel::fake();
+    Storage::fake('local');
     seedUsers(6);
 
     fileExporter()
@@ -40,20 +36,16 @@ it('continues serial numbers across split sheets', function (): void {
         ->autoSplit(true, 4) // sheet 1: rows 1-4, sheet 2: rows 5-6
         ->store();
 
-    Excel::assertStored('exports/export.xlsx', 'local', function (MultiSheetExport $export): bool {
-        $sheets = $export->sheets();
-        $this->assertCount(2, $sheets);
+    $spreadsheet = IOFactory::load(Storage::disk('local')->path('exports/export.xlsx'));
 
-        // First mapped row on the second sheet should be serial #5.
-        $secondSheetFirstRow = $sheets[1]->map(User::query()->orderBy('id')->skip(4)->first());
-        $this->assertSame(5, $secondSheetFirstRow[0]);
+    expect($spreadsheet->getSheetCount())->toBe(2);
 
-        return true;
-    });
+    // First data row of the second sheet (A1 is the "S.N." header) continues at 5.
+    expect((int) $spreadsheet->getSheet(1)->getCell('A2')->getValue())->toBe(5);
 });
 
 it('does not split csv exports', function (): void {
-    Excel::fake();
+    Storage::fake('local');
     seedUsers(10);
 
     fileExporter()
@@ -64,21 +56,22 @@ it('does not split csv exports', function (): void {
         ->autoSplit(true, 4)
         ->store();
 
-    Excel::assertStored('exports/export.csv', 'local', function ($export): bool {
-        $this->assertNotInstanceOf(MultiSheetExport::class, $export);
+    $contents = Storage::disk('local')->get('exports/export.csv');
 
-        return true;
-    });
+    // One single CSV file containing every row (header + 10 rows).
+    expect($contents)->toContain('User 1')
+        ->and($contents)->toContain('User 10')
+        ->and(substr_count((string) $contents, "\n"))->toBe(11);
 });
 
 it('enforces max rows when auto split disabled', function (): void {
-    Excel::fake();
+    Storage::fake('local');
     seedUsers(10);
+
+    config()->set('file-export.max_rows', 5);
 
     $this->expectException(FileExportException::class);
     $this->expectExceptionMessage('exceeds the configured maximum');
-
-    config()->set('file-export.max_rows', 5);
 
     fileExporter()
         ->fromQuery(User::query())
@@ -89,7 +82,7 @@ it('enforces max rows when auto split disabled', function (): void {
 });
 
 it('does not split collections', function (): void {
-    Excel::fake();
+    Storage::fake('local');
 
     fileExporter()
         ->fromCollection(collect(range(1, 10))->map(fn ($n) => ['n' => $n]))
@@ -98,9 +91,7 @@ it('does not split collections', function (): void {
         ->autoSplit(true, 4)
         ->store();
 
-    Excel::assertStored('exports/export.xlsx', 'local', function ($export): bool {
-        $this->assertInstanceOf(CollectionExport::class, $export);
+    $spreadsheet = IOFactory::load(Storage::disk('local')->path('exports/export.xlsx'));
 
-        return true;
-    });
+    expect($spreadsheet->getSheetCount())->toBe(1);
 });

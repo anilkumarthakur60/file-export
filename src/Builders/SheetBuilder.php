@@ -7,16 +7,21 @@ namespace Anil\FileExport\Builders;
 use Anil\FileExport\Contracts\Exportable;
 use Anil\FileExport\DataTransferObjects\CsvSettings;
 use Anil\FileExport\DataTransferObjects\StyleConfig;
+use Anil\FileExport\Engine\Contracts\ExportSheet;
 use Anil\FileExport\Enums\ExportFormat;
 use Anil\FileExport\Exceptions\FileExportException;
+use Anil\FileExport\Exports\BaseQueryExport;
 use Anil\FileExport\Exports\CollectionExport;
+use Anil\FileExport\Exports\IterableSheet;
 use Anil\FileExport\Exports\LargeQueryExport;
-use Anil\FileExport\Exports\MultiSheetExport;
 use Anil\FileExport\Exports\QueryExport;
+use Anil\FileExport\Exports\ViewSheet;
 use Closure;
+use Illuminate\Contracts\View\View;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Support\Collection;
+use PhpOffice\PhpSpreadsheet\Cell\IValueBinder;
 
 /**
  * Fluent builder for configuring a single export sheet.
@@ -44,6 +49,11 @@ final class SheetBuilder
     /** @var Collection<int, mixed>|null */
     private ?Collection $collection = null;
 
+    /** @var (Closure(): iterable<int, mixed>)|null */
+    private ?Closure $rowsFactory = null;
+
+    private View|Closure|null $viewSource = null;
+
     private bool $includeSerialNumber = false;
 
     private ?StyleConfig $styleConfig = null;
@@ -62,8 +72,19 @@ final class SheetBuilder
     /** @var array<string, float|int> */
     private array $columnWidths = [];
 
-    /** @var array<string, string> */
-    private array $documentProperties = [];
+    private ?Closure $styleCallback = null;
+
+    private ?string $startCell = null;
+
+    private bool $strictNulls = false;
+
+    private ?IValueBinder $valueBinder = null;
+
+    /** @var array<int, \PhpOffice\PhpSpreadsheet\Chart\Chart> */
+    private array $charts = [];
+
+    /** @var array<int, \PhpOffice\PhpSpreadsheet\Worksheet\BaseDrawing> */
+    private array $drawings = [];
 
     public function __construct(
         private readonly StyleConfig $defaultStyling,
@@ -89,7 +110,7 @@ final class SheetBuilder
     public function fromQuery(EloquentBuilder|Relation|Closure $builder): self
     {
         $this->queryBuilder = $builder;
-        $this->collection = null;
+        $this->clearOtherSources('query');
 
         return $this;
     }
@@ -102,9 +123,77 @@ final class SheetBuilder
     public function fromCollection(Collection $collection): self
     {
         $this->collection = $collection;
-        $this->queryBuilder = null;
+        $this->clearOtherSources('collection');
 
         return $this;
+    }
+
+    /**
+     * Set a plain array as the data source.
+     *
+     * @param  array<int, mixed>  $rows
+     */
+    public function fromArray(array $rows): self
+    {
+        $this->rowsFactory = static fn (): iterable => $rows;
+        $this->clearOtherSources('rows');
+
+        return $this;
+    }
+
+    /**
+     * Set a Traversable iterator as the data source (consumed once, lazily).
+     *
+     * @param  \Traversable<int, mixed>  $iterator
+     */
+    public function fromIterator(\Traversable $iterator): self
+    {
+        $this->rowsFactory = static fn (): iterable => $iterator;
+        $this->clearOtherSources('rows');
+
+        return $this;
+    }
+
+    /**
+     * Set a generator factory as the data source (streamed, memory-efficient).
+     *
+     * @param  Closure(): iterable<int, mixed>  $generator
+     */
+    public function fromGenerator(Closure $generator): self
+    {
+        $this->rowsFactory = $generator;
+        $this->clearOtherSources('rows');
+
+        return $this;
+    }
+
+    /**
+     * Render a Blade view as the sheet content.
+     *
+     * @param  View|(Closure(): View)  $view
+     */
+    public function fromView(View|Closure $view): self
+    {
+        $this->viewSource = $view;
+        $this->clearOtherSources('view');
+
+        return $this;
+    }
+
+    private function clearOtherSources(string $keep): void
+    {
+        if ($keep !== 'query') {
+            $this->queryBuilder = null;
+        }
+        if ($keep !== 'collection') {
+            $this->collection = null;
+        }
+        if ($keep !== 'rows') {
+            $this->rowsFactory = null;
+        }
+        if ($keep !== 'view') {
+            $this->viewSource = null;
+        }
     }
 
     /**
@@ -251,13 +340,67 @@ final class SheetBuilder
     }
 
     /**
-     * Set document metadata properties.
+     * Style the rendered worksheet via a callback.
      *
-     * @param  array<string, string>  $properties
+     * @param  Closure(\PhpOffice\PhpSpreadsheet\Worksheet\Worksheet): void  $callback
      */
-    public function withProperties(array $properties): self
+    public function styleUsing(Closure $callback): self
     {
-        $this->documentProperties = $properties;
+        $this->styleCallback = $callback;
+
+        return $this;
+    }
+
+    /**
+     * Set the top-left cell where data begins (e.g. "B2").
+     */
+    public function startCell(string $coordinate): self
+    {
+        $this->startCell = $coordinate;
+
+        return $this;
+    }
+
+    /**
+     * Use strict null comparison when writing cell values.
+     */
+    public function strictNulls(bool $strict = true): self
+    {
+        $this->strictNulls = $strict;
+
+        return $this;
+    }
+
+    /**
+     * Set a custom PhpSpreadsheet value binder.
+     */
+    public function bindValuesUsing(IValueBinder $binder): self
+    {
+        $this->valueBinder = $binder;
+
+        return $this;
+    }
+
+    /**
+     * Attach charts to the sheet (xlsx only).
+     *
+     * @param  array<int, \PhpOffice\PhpSpreadsheet\Chart\Chart>  $charts
+     */
+    public function withCharts(array $charts): self
+    {
+        $this->charts = $charts;
+
+        return $this;
+    }
+
+    /**
+     * Attach images/drawings to the sheet (xlsx only).
+     *
+     * @param  array<int, \PhpOffice\PhpSpreadsheet\Worksheet\BaseDrawing>  $drawings
+     */
+    public function withImages(array $drawings): self
+    {
+        $this->drawings = $drawings;
 
         return $this;
     }
@@ -267,21 +410,32 @@ final class SheetBuilder
     // ──────────────────────────────────────────
 
     /**
-     * Validate configuration and build the Maatwebsite export object.
+     * Validate configuration and build a single export sheet.
+     *
+     * Used for multi-sheet workbooks (one sheet per addSheet() call); does not
+     * auto-split. Single-sheet exports use buildResolved() instead.
      *
      * @throws FileExportException
      */
-    public function build(): CollectionExport|QueryExport
+    public function build(): ExportSheet
     {
         $this->validate();
 
         $styling = $this->styleConfig ?? $this->defaultStyling;
+
+        if ($this->viewSource !== null) {
+            return $this->buildViewSheet($styling);
+        }
 
         /** @var Closure $mappingCallback */
         $mappingCallback = $this->mappingCallback;
 
         if ($this->queryBuilder !== null) {
             return $this->buildQueryExport($styling, $mappingCallback);
+        }
+
+        if ($this->rowsFactory !== null) {
+            return $this->buildIterableSheet($styling, $mappingCallback);
         }
 
         return $this->buildCollectionExport($styling, $mappingCallback);
@@ -298,29 +452,31 @@ final class SheetBuilder
      * @param  bool  $autoSplitEnabled  Whether oversized xlsx/ods query exports may split across sheets.
      * @param  int  $rowsPerSheet  Maximum rows per sheet before splitting.
      * @param  int|null  $maxRows  Row guard for spreadsheet formats (null = unlimited).
+     * @return array<int, ExportSheet>  One sheet, or several when auto-split.
      *
      * @throws FileExportException
      */
-    public function buildResolved(ExportFormat $format, bool $autoSplitEnabled, int $rowsPerSheet, ?int $maxRows): CollectionExport|QueryExport|MultiSheetExport
+    public function buildResolved(ExportFormat $format, bool $autoSplitEnabled, int $rowsPerSheet, ?int $maxRows): array
     {
         $this->validate();
 
         $styling = $this->styleConfig ?? $this->defaultStyling;
 
+        // Non-query sources never auto-split (and a view has no row count).
+        if ($this->queryBuilder === null) {
+            if ($this->collection !== null) {
+                $total = $this->collection->count();
+                if ($this->rowLimit !== null) {
+                    $total = min($total, $this->rowLimit);
+                }
+                $this->enforceMaxRows($total, $format, $maxRows);
+            }
+
+            return [$this->build()];
+        }
+
         /** @var Closure $mappingCallback */
         $mappingCallback = $this->mappingCallback;
-
-        // Collection sources are already in memory: guard the row limit but
-        // never split (a collection that large is itself the problem).
-        if ($this->queryBuilder === null) {
-            $total = $this->collection?->count() ?? 0;
-            if ($this->rowLimit !== null) {
-                $total = min($total, $this->rowLimit);
-            }
-            $this->enforceMaxRows($total, $format, $maxRows);
-
-            return $this->buildCollectionExport($styling, $mappingCallback);
-        }
 
         $total = $this->countQueryRows($this->queryBuilder);
         if ($this->rowLimit !== null) {
@@ -341,7 +497,7 @@ final class SheetBuilder
 
         $this->enforceMaxRows($total, $format, $maxRows);
 
-        return $this->buildQueryExport($styling, $mappingCallback);
+        return [$this->buildQueryExport($styling, $mappingCallback)];
     }
 
     /**
@@ -349,7 +505,12 @@ final class SheetBuilder
      */
     public function validate(): void
     {
-        if ($this->queryBuilder === null && $this->collection === null) {
+        // A view sheet defines its own content, so headers/mapping aren't required.
+        if ($this->viewSource !== null) {
+            return;
+        }
+
+        if ($this->queryBuilder === null && $this->collection === null && $this->rowsFactory === null) {
             throw FileExportException::missingDataSource();
         }
 
@@ -403,14 +564,77 @@ final class SheetBuilder
         return $export;
     }
 
-    private function applySharedSettings(CollectionExport|QueryExport $export): void
+    private function buildIterableSheet(StyleConfig $styling, Closure $mappingCallback): IterableSheet
+    {
+        $factory = $this->rowsFactory ?? throw FileExportException::missingDataSource();
+        $source = $factory();
+
+        if ($this->rowLimit !== null) {
+            $source = $this->limitIterable($source, $this->rowLimit);
+        }
+
+        $export = new IterableSheet(
+            source: $source,
+            headers: $this->headers,
+            mappingCallback: $mappingCallback,
+            styleConfig: $styling,
+        );
+
+        $this->applySharedSettings($export);
+
+        return $export;
+    }
+
+    private function buildViewSheet(StyleConfig $styling): ViewSheet
+    {
+        $view = $this->viewSource ?? throw FileExportException::missingDataSource();
+
+        $export = new ViewSheet($view, $styling);
+
+        $this->applySharedSettings($export);
+
+        return $export;
+    }
+
+    /**
+     * @param  iterable<int, mixed>  $source
+     * @return array<int, mixed>
+     */
+    private function limitIterable(iterable $source, int $limit): array
+    {
+        $rows = [];
+        foreach ($source as $row) {
+            if (count($rows) >= $limit) {
+                break;
+            }
+            $rows[] = $row;
+        }
+
+        return $rows;
+    }
+
+    private function applySharedSettings(CollectionExport|BaseQueryExport|IterableSheet|ViewSheet $export): void
     {
         $export
             ->withSerialNumber($this->includeSerialNumber)
             ->withColumnFormats($this->columnFormats)
             ->withColumnWidths($this->columnWidths)
-            ->withProperties($this->documentProperties)
-            ->withCsvSettings($this->csvSettings ?? $this->defaultCsv);
+            ->withCsvSettings($this->csvSettings ?? $this->defaultCsv)
+            ->strictNulls($this->strictNulls)
+            ->withCharts($this->charts)
+            ->withImages($this->drawings);
+
+        if ($this->startCell !== null) {
+            $export->startCell($this->startCell);
+        }
+
+        if ($this->styleCallback !== null) {
+            $export->styleUsing($this->styleCallback);
+        }
+
+        if ($this->valueBinder !== null) {
+            $export->bindValuesUsing($this->valueBinder);
+        }
 
         if ($this->sheetTitle !== null) {
             $export->withTitle($this->sheetTitle);
@@ -455,8 +679,9 @@ final class SheetBuilder
      * Split a query across multiple sheets, each capped at rowsPerSheet rows.
      *
      * @param  EloquentBuilder<\Illuminate\Database\Eloquent\Model>|Relation<\Illuminate\Database\Eloquent\Model, \Illuminate\Database\Eloquent\Model, mixed>|(Closure(): (EloquentBuilder<\Illuminate\Database\Eloquent\Model>|Relation<\Illuminate\Database\Eloquent\Model, \Illuminate\Database\Eloquent\Model, mixed>))  $builder
+     * @return array<int, QueryExport|LargeQueryExport>
      */
-    private function buildSplitExport(StyleConfig $styling, Closure $mappingCallback, EloquentBuilder|Relation|Closure $builder, int $total, int $cap): MultiSheetExport
+    private function buildSplitExport(StyleConfig $styling, Closure $mappingCallback, EloquentBuilder|Relation|Closure $builder, int $total, int $cap): array
     {
         $sheetCount = (int) ceil($total / $cap);
 
@@ -467,10 +692,7 @@ final class SheetBuilder
             $windows[] = $this->buildQueryWindow($builder, $styling, $mappingCallback, $offset, $limit, $index, $cap);
         }
 
-        return new MultiSheetExport(
-            sheets: $windows,
-            documentProperties: $this->documentProperties,
-        );
+        return $windows;
     }
 
     /**
@@ -496,7 +718,6 @@ final class SheetBuilder
             ->withSerialNumber($this->includeSerialNumber)
             ->withColumnFormats($this->columnFormats)
             ->withColumnWidths($this->columnWidths)
-            ->withProperties($this->documentProperties)
             ->withCsvSettings($this->csvSettings ?? $this->defaultCsv)
             ->disableLargeSheetStyling($this->disableStylingOnLargeSheets);
 

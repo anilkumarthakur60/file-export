@@ -5,39 +5,26 @@ declare(strict_types=1);
 namespace Anil\FileExport\Exports;
 
 use Anil\FileExport\DataTransferObjects\StyleConfig;
+use Anil\FileExport\Engine\Contracts\ExportSheet;
 use Anil\FileExport\Exports\Concerns\HasSheetFormatting;
 use Closure;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Eloquent\Relations\Relation;
 use Laravel\SerializableClosure\SerializableClosure;
-use Maatwebsite\Excel\Concerns\FromQuery;
-use Maatwebsite\Excel\Concerns\WithChunkReading;
-use Maatwebsite\Excel\Concerns\WithColumnFormatting;
-use Maatwebsite\Excel\Concerns\WithCustomCsvSettings;
-use Maatwebsite\Excel\Concerns\WithColumnWidths;
-use Maatwebsite\Excel\Concerns\WithEvents;
-use Maatwebsite\Excel\Concerns\WithHeadings;
-use Maatwebsite\Excel\Concerns\WithMapping;
-use Maatwebsite\Excel\Concerns\WithProperties;
-use Maatwebsite\Excel\Concerns\WithStyles;
-use Maatwebsite\Excel\Concerns\WithTitle;
 
 /**
- * Shared implementation for query-backed exports with automatic chunking.
+ * Shared implementation for query-backed export sheets.
  *
- * Rows are processed in configurable chunks to keep memory usage constant
- * regardless of total row count. Subclasses decide whether to opt into
- * auto-column-sizing (see QueryExport vs LargeQueryExport).
+ * Rows are streamed from the database with an unbuffered cursor so memory
+ * stays bounded regardless of total row count. Subclasses decide whether to
+ * opt into auto-column-sizing (see QueryExport vs LargeQueryExport).
  *
  * The query source may be a live builder (convenient for sync exports) or a
  * factory closure that rebuilds the query (required for queued exports, where
- * a live builder cannot be serialized because it holds a database connection).
- * Both the query factory and the mapping callback are wrapped in a
- * SerializableClosure so the export can be queued.
- *
- * @implements WithMapping<mixed>
+ * a live builder cannot be serialized). Both the query factory and the mapping
+ * callback are wrapped in a SerializableClosure so the sheet can be queued.
  */
-abstract class BaseQueryExport implements FromQuery, WithChunkReading, WithColumnFormatting, WithColumnWidths, WithCustomCsvSettings, WithEvents, WithHeadings, WithMapping, WithProperties, WithStyles, WithTitle
+abstract class BaseQueryExport implements ExportSheet
 {
     use HasSheetFormatting;
 
@@ -49,7 +36,7 @@ abstract class BaseQueryExport implements FromQuery, WithChunkReading, WithColum
      * @param  EloquentBuilder<\Illuminate\Database\Eloquent\Model>|Relation<\Illuminate\Database\Eloquent\Model, \Illuminate\Database\Eloquent\Model, mixed>|(Closure(): (EloquentBuilder<\Illuminate\Database\Eloquent\Model>|Relation<\Illuminate\Database\Eloquent\Model, \Illuminate\Database\Eloquent\Model, mixed>))  $builder  The query to export, or a factory that returns it.
      * @param  array<int, string>  $headers  Column header labels.
      * @param  Closure  $mappingCallback  Maps each row to an array of cell values.
-     * @param  int  $chunkSize  Number of rows per chunk.
+     * @param  int  $chunkSize  Reserved for chunked fallbacks.
      * @param  StyleConfig  $styleConfig  Styling configuration for this sheet.
      */
     public function __construct(
@@ -61,6 +48,11 @@ abstract class BaseQueryExport implements FromQuery, WithChunkReading, WithColum
     ) {
         $this->initializeFormatting($styleConfig);
     }
+
+    /**
+     * Whether columns should be auto-sized for this sheet.
+     */
+    abstract public function autoSize(): bool;
 
     /**
      * Set the number of rows processed per chunk.
@@ -93,9 +85,34 @@ abstract class BaseQueryExport implements FromQuery, WithChunkReading, WithColum
     }
 
     /**
+     * @return array<int, string>
+     */
+    public function headings(): array
+    {
+        return $this->prependSerialNumberHeader($this->headers);
+    }
+
+    /**
+     * Stream the windowed, mapped, serial-numbered rows from the database.
+     *
+     * @return iterable<int, array<int, mixed>>
+     */
+    public function rows(): iterable
+    {
+        foreach ($this->resolveQuery()->cursor() as $model) {
+            /** @var array<int, mixed> $mapped */
+            $mapped = ($this->mappingCallback)($model);
+
+            yield $this->prependSerialNumber($mapped);
+        }
+    }
+
+    /**
+     * Build the windowed query (resolving the factory closure if given).
+     *
      * @return EloquentBuilder<\Illuminate\Database\Eloquent\Model>|Relation<\Illuminate\Database\Eloquent\Model, \Illuminate\Database\Eloquent\Model, mixed>
      */
-    public function query(): EloquentBuilder|Relation
+    private function resolveQuery(): EloquentBuilder|Relation
     {
         $query = $this->builder instanceof Closure ? ($this->builder)() : $this->builder;
 
@@ -111,30 +128,6 @@ abstract class BaseQueryExport implements FromQuery, WithChunkReading, WithColum
     }
 
     /**
-     * @return array<int, string>
-     */
-    public function headings(): array
-    {
-        return $this->prependSerialNumberHeader($this->headers);
-    }
-
-    /**
-     * @return array<int, mixed>
-     */
-    public function map(mixed $row): array
-    {
-        /** @var array<int, mixed> $mapped */
-        $mapped = ($this->mappingCallback)($row);
-
-        return $this->prependSerialNumber($mapped);
-    }
-
-    public function chunkSize(): int
-    {
-        return $this->chunkSize;
-    }
-
-    /**
      * Capture state for queueing, wrapping closures so they can be serialized.
      *
      * @return array<mixed>
@@ -147,6 +140,10 @@ abstract class BaseQueryExport implements FromQuery, WithChunkReading, WithColum
 
         if ($this->builder instanceof Closure) {
             $data['builder'] = new SerializableClosure($this->builder);
+        }
+
+        if ($this->styleCallback instanceof Closure) {
+            $data['styleCallback'] = new SerializableClosure($this->styleCallback);
         }
 
         return $data;

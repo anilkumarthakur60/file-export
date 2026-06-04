@@ -5,10 +5,10 @@ declare(strict_types=1);
 use Anil\FileExport\Enums\ExportFormat;
 use Anil\FileExport\Services\FileExporter;
 use Anil\FileExport\Tests\Fixtures\User;
-use Maatwebsite\Excel\Facades\Excel;
+use Illuminate\Support\Facades\Storage;
 
 it('reports the format and mime type on the result', function (): void {
-    Excel::fake();
+    Storage::fake('local');
     seedUsers(1);
 
     $result = fileExporter()
@@ -27,7 +27,7 @@ it('reports the format and mime type on the result', function (): void {
 });
 
 it('reports csv format and mime type', function (): void {
-    Excel::fake();
+    Storage::fake('local');
     seedUsers(1);
 
     $result = fileExporter()
@@ -42,7 +42,7 @@ it('reports csv format and mime type', function (): void {
 });
 
 it('applies the when() helper conditionally', function (): void {
-    Excel::fake();
+    Storage::fake('local');
     seedUsers(1);
 
     $result = fileExporter()
@@ -57,7 +57,7 @@ it('applies the when() helper conditionally', function (): void {
 });
 
 it('can be extended with a macro', function (): void {
-    Excel::fake();
+    Storage::fake('local');
     seedUsers(1);
 
     FileExporter::macro('asNamedReport', function (string $name): FileExporter {

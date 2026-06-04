@@ -5,10 +5,10 @@ declare(strict_types=1);
 use Anil\FileExport\Mail\ExportReadyMail;
 use Anil\FileExport\Tests\Fixtures\User;
 use Illuminate\Support\Facades\Mail;
-use Maatwebsite\Excel\Facades\Excel;
+use Illuminate\Support\Facades\Storage;
 
 it('overrides the storage path at runtime', function (): void {
-    Excel::fake();
+    Storage::fake('local');
     seedUsers(1);
 
     $result = fileExporter()
@@ -18,13 +18,13 @@ it('overrides the storage path at runtime', function (): void {
         ->path('reports/2026')
         ->store();
 
-    Excel::assertStored('reports/2026/export.xlsx', 'local');
+    Storage::disk('local')->assertExists('reports/2026/export.xlsx');
     expect($result->path)->toBe('reports/2026/export.xlsx');
 });
 
 it('overrides max_rows at runtime to raise the guard', function (): void {
     config()->set('file-export.max_rows', 3);
-    Excel::fake();
+    Storage::fake('local');
     seedUsers(10);
 
     // Config would throw at 3 rows, but the runtime override raises it.
@@ -41,7 +41,7 @@ it('overrides max_rows at runtime to raise the guard', function (): void {
 
 it('overrides max_rows at runtime to unlimited', function (): void {
     config()->set('file-export.max_rows', 3);
-    Excel::fake();
+    Storage::fake('local');
     seedUsers(10);
 
     $result = fileExporter()
@@ -56,7 +56,7 @@ it('overrides max_rows at runtime to unlimited', function (): void {
 });
 
 it('overrides the email subject at runtime', function (): void {
-    Excel::fake();
+    Storage::fake('local');
     Mail::fake();
     seedUsers(1);
 

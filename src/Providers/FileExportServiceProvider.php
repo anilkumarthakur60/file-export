@@ -7,8 +7,11 @@ namespace Anil\FileExport\Providers;
 use Anil\FileExport\Contracts\FilenameGenerator;
 use Anil\FileExport\Contracts\UrlResolver;
 use Anil\FileExport\DataTransferObjects\ExportConfig;
+use Anil\FileExport\Engine\Contracts\ExportEngine;
+use Anil\FileExport\Engine\SpreadsheetEngine;
 use Anil\FileExport\Services\ExportCompletionHandler;
 use Anil\FileExport\Services\FileExporter;
+use Anil\FileExport\Services\FileImporter;
 use Anil\FileExport\Services\TemporaryUrlResolver;
 use Anil\FileExport\Services\TimestampedFilenameGenerator;
 use Illuminate\Support\ServiceProvider;
@@ -35,8 +38,10 @@ final class FileExportServiceProvider extends ServiceProvider
 
         $this->app->bind(FilenameGenerator::class, TimestampedFilenameGenerator::class);
         $this->app->bind(UrlResolver::class, TemporaryUrlResolver::class);
+        $this->app->bind(ExportEngine::class, SpreadsheetEngine::class);
         $this->app->bind(ExportCompletionHandler::class);
         $this->app->bind(FileExporter::class);
+        $this->app->bind(FileImporter::class);
     }
 
     public function boot(): void

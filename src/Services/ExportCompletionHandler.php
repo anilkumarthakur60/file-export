@@ -18,7 +18,7 @@ use Illuminate\Support\Facades\Notification;
  * Runs the "after the file exists" actions for a finished export.
  *
  * Shared by both the synchronous store() path and the queued
- * HandleExportCompletion job, so the four completion mechanisms behave
+ * PerformExport job, so the four completion mechanisms behave
  * identically regardless of how the export was produced:
  *   1. always fire the ExportCompleted event (unless disabled);
  *   2. send a Notification to a notifiable, if configured;

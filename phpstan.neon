@@ -8,3 +8,4 @@ parameters:
     treatPhpDocTypesAsCertain: false
     excludePaths:
         - src/Traits/CanExport.php
+        - src/Traits/CanImport.php

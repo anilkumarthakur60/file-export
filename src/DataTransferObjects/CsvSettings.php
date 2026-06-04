@@ -7,7 +7,7 @@ namespace Anil\FileExport\DataTransferObjects;
 /**
  * Immutable CSV/TSV writer settings.
  *
- * Maps to Maatwebsite's WithCustomCsvSettings. Ignored by non-delimited
+ * Consumed by the package's StreamingCsvWriter. Ignored by non-delimited
  * formats (xlsx, ods, …). The most common need is `useBom: true` so Excel
  * opens UTF-8 CSV files with the correct encoding, and a `;` delimiter for
  * locales where Excel expects semicolons.
@@ -20,7 +20,7 @@ final readonly class CsvSettings
      * @param  string  $lineEnding  Line ending sequence.
      * @param  bool  $useBom  Prepend a UTF-8 byte-order mark (helps Excel detect UTF-8).
      * @param  bool  $includeSeparatorLine  Emit a leading "sep=" hint line.
-     * @param  bool  $excelCompatibility  Enable Maatwebsite's Excel-compatibility mode.
+     * @param  bool  $excelCompatibility  Reserved for Excel-compatibility output mode.
      * @param  string  $outputEncoding  Output encoding (empty = no conversion).
      */
     public function __construct(
@@ -52,7 +52,7 @@ final readonly class CsvSettings
     }
 
     /**
-     * Convert to the array shape Maatwebsite's getCsvSettings() expects.
+     * Convert to a plain settings array.
      *
      * @return array<string, string|bool>
      */

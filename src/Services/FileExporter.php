@@ -13,22 +13,19 @@ use Anil\FileExport\DataTransferObjects\CsvSettings;
 use Anil\FileExport\DataTransferObjects\ExportConfig;
 use Anil\FileExport\DataTransferObjects\ExportResult;
 use Anil\FileExport\DataTransferObjects\StyleConfig;
+use Anil\FileExport\Engine\Contracts\ExportEngine;
+use Anil\FileExport\Engine\ExportDocument;
 use Anil\FileExport\Enums\ExportFormat;
 use Anil\FileExport\Exceptions\FileExportException;
-use Anil\FileExport\Exports\BaseQueryExport;
-use Anil\FileExport\Exports\CollectionExport;
-use Anil\FileExport\Exports\MultiSheetExport;
-use Anil\FileExport\Jobs\HandleExportCompletion;
+use Anil\FileExport\Jobs\PerformExport;
 use Closure;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Eloquent\Relations\Relation;
-use Illuminate\Foundation\Bus\PendingDispatch;
 use Illuminate\Notifications\Notification;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Traits\Conditionable;
 use Illuminate\Support\Traits\Macroable;
 use Laravel\SerializableClosure\SerializableClosure;
-use Maatwebsite\Excel\Exporter;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
 /**
@@ -80,6 +77,13 @@ final class FileExporter
     /** @var array<string, string> */
     private array $documentProperties = [];
 
+    private ?Closure $defaultStyleCallback = null;
+
+    /** @var string|array<string, mixed>|null */
+    private string|array|null $background = null;
+
+    private bool $precalculateFormulas = false;
+
     // Completion options (apply to store() and queue()).
     private bool $fireCompletionEvent = true;
 
@@ -106,14 +110,14 @@ final class FileExporter
      * @param  ExportConfig  $config  Package configuration (resolved from config file).
      * @param  FilenameGenerator  $filenameGenerator  Generates filenames for stored exports.
      * @param  UrlResolver  $urlResolver  Resolves download URLs for stored exports.
-     * @param  Exporter  $excel  The Maatwebsite Excel service (injected via interface, not facade).
+     * @param  ExportEngine  $engine  The rendering engine that writes the export.
      * @param  ExportCompletionHandler  $completionHandler  Runs post-export actions (event/notify/callback/email).
      */
     public function __construct(
         private readonly ExportConfig $config,
         private readonly FilenameGenerator $filenameGenerator,
         private readonly UrlResolver $urlResolver,
-        private readonly Exporter $excel,
+        private readonly ExportEngine $engine,
         private readonly ExportCompletionHandler $completionHandler,
     ) {
         $this->format = $this->config->defaultFormat;
@@ -159,6 +163,54 @@ final class FileExporter
     public function fromCollection(Collection $collection): self
     {
         $this->defaultSheet->fromCollection($collection);
+
+        return $this;
+    }
+
+    /**
+     * Set a plain array as the data source.
+     *
+     * @param  array<int, mixed>  $rows
+     */
+    public function fromArray(array $rows): self
+    {
+        $this->defaultSheet->fromArray($rows);
+
+        return $this;
+    }
+
+    /**
+     * Set a Traversable iterator as the data source (consumed once, lazily).
+     *
+     * @param  \Traversable<int, mixed>  $iterator
+     */
+    public function fromIterator(\Traversable $iterator): self
+    {
+        $this->defaultSheet->fromIterator($iterator);
+
+        return $this;
+    }
+
+    /**
+     * Set a generator factory as the data source (streamed).
+     *
+     * @param  Closure(): iterable<int, mixed>  $generator
+     */
+    public function fromGenerator(Closure $generator): self
+    {
+        $this->defaultSheet->fromGenerator($generator);
+
+        return $this;
+    }
+
+    /**
+     * Render a Blade view as the sheet content.
+     *
+     * @param  \Illuminate\Contracts\View\View|(Closure(): \Illuminate\Contracts\View\View)  $view
+     */
+    public function fromView(\Illuminate\Contracts\View\View|Closure $view): self
+    {
+        $this->defaultSheet->fromView($view);
 
         return $this;
     }
@@ -283,6 +335,72 @@ final class FileExporter
         return $this;
     }
 
+    /**
+     * Style the rendered worksheet via a callback (equivalent to an after-sheet hook).
+     *
+     * @param  Closure(\PhpOffice\PhpSpreadsheet\Worksheet\Worksheet): void  $callback
+     */
+    public function styleUsing(Closure $callback): self
+    {
+        $this->defaultSheet->styleUsing($callback);
+
+        return $this;
+    }
+
+    /**
+     * Set the top-left cell where the data begins (e.g. "B2").
+     */
+    public function startCell(string $coordinate): self
+    {
+        $this->defaultSheet->startCell($coordinate);
+
+        return $this;
+    }
+
+    /**
+     * Use strict null comparison when writing cell values.
+     */
+    public function strictNulls(bool $strict = true): self
+    {
+        $this->defaultSheet->strictNulls($strict);
+
+        return $this;
+    }
+
+    /**
+     * Set a custom PhpSpreadsheet value binder for cell type inference.
+     */
+    public function bindValuesUsing(\PhpOffice\PhpSpreadsheet\Cell\IValueBinder $binder): self
+    {
+        $this->defaultSheet->bindValuesUsing($binder);
+
+        return $this;
+    }
+
+    /**
+     * Attach charts to the sheet (xlsx only).
+     *
+     * @param  array<int, \PhpOffice\PhpSpreadsheet\Chart\Chart>  $charts
+     */
+    public function withCharts(array $charts): self
+    {
+        $this->defaultSheet->withCharts($charts);
+
+        return $this;
+    }
+
+    /**
+     * Attach images/drawings to the sheet (xlsx only).
+     *
+     * @param  array<int, \PhpOffice\PhpSpreadsheet\Worksheet\BaseDrawing>  $drawings
+     */
+    public function withImages(array $drawings): self
+    {
+        $this->defaultSheet->withImages($drawings);
+
+        return $this;
+    }
+
     // ──────────────────────────────────────────
     // Multi-sheet mode
     // ──────────────────────────────────────────
@@ -379,6 +497,40 @@ final class FileExporter
     public function withProperties(array $properties): self
     {
         $this->documentProperties = array_merge($this->documentProperties, $properties);
+
+        return $this;
+    }
+
+    /**
+     * Apply a callback to the workbook's default style (all cells).
+     *
+     * @param  Closure(\PhpOffice\PhpSpreadsheet\Style\Style): void  $callback
+     */
+    public function defaultStyleUsing(Closure $callback): self
+    {
+        $this->defaultStyleCallback = $callback;
+
+        return $this;
+    }
+
+    /**
+     * Set a default background colour for all cells (RGB hex string or a style array).
+     *
+     * @param  string|array<string, mixed>  $color
+     */
+    public function background(string|array $color): self
+    {
+        $this->background = $color;
+
+        return $this;
+    }
+
+    /**
+     * Pre-calculate all formulas before saving the workbook.
+     */
+    public function precalculateFormulas(bool $enabled = true): self
+    {
+        $this->precalculateFormulas = $enabled;
 
         return $this;
     }
@@ -508,12 +660,12 @@ final class FileExporter
      */
     public function store(): ExportResult
     {
-        $exportObject = $this->buildExportObject();
+        $document = $this->buildExportObject();
         $resolvedFilename = $this->filenameGenerator->generate($this->filename, $this->format);
         $storagePath = $this->resolveStoragePath($resolvedFilename);
         $storageDisk = $this->disk ?? $this->config->disk;
 
-        $stored = $this->excel->store($exportObject, $storagePath, $storageDisk, $this->format->writerType());
+        $stored = $this->engine->store($document, $storageDisk, $storagePath, $this->format);
 
         if (! $stored) {
             throw FileExportException::storageFailed($resolvedFilename);
@@ -545,11 +697,10 @@ final class FileExporter
      */
     public function download(): BinaryFileResponse
     {
-        $exportObject = $this->buildExportObject();
+        $document = $this->buildExportObject();
         $resolvedFilename = $this->filenameGenerator->generate($this->filename, $this->format);
 
-        /** @var BinaryFileResponse */
-        return $this->excel->download($exportObject, $resolvedFilename, $this->format->writerType());
+        return $this->engine->download($document, $resolvedFilename, $this->format);
     }
 
     /**
@@ -564,31 +715,33 @@ final class FileExporter
     {
         $this->assertQueueable();
 
-        $exportObject = $this->buildExportObject();
+        $document = $this->buildExportObject();
         $resolvedFilename = $this->filenameGenerator->generate($this->filename, $this->format);
         $storagePath = $this->resolveStoragePath($resolvedFilename);
         $storageDisk = $this->disk ?? $this->config->disk;
 
-        $pending = $this->excel->queue($exportObject, $storagePath, $storageDisk, $this->format->writerType());
+        $pending = PerformExport::dispatch(
+            $document,
+            $storageDisk,
+            $storagePath,
+            $resolvedFilename,
+            $this->format,
+            $this->fireCompletionEvent,
+            $this->notifiable,
+            $this->notification,
+            $this->completionCallback !== null ? new SerializableClosure($this->completionCallback) : null,
+            $this->mailRecipients,
+            $this->mailSubjectOverride,
+            $this->mailAttachThresholdOverride,
+            $this->expireDaysOverride,
+        );
 
-        if ($pending instanceof PendingDispatch) {
-            if ($this->queueConnection !== null) {
-                $pending->onConnection($this->queueConnection);
-            }
+        if ($this->queueConnection !== null) {
+            $pending->onConnection($this->queueConnection);
+        }
 
-            if ($this->queueName !== null) {
-                $pending->onQueue($this->queueName);
-            }
-
-            $completion = $this->completionConfig();
-            if ($completion->hasWork()) {
-                // Append the completion job AFTER Maatwebsite's write chain so it
-                // runs only once the file is fully stored.
-                $job = $pending->getJob();
-                if (is_object($job) && method_exists($job, 'appendToChain')) {
-                    $job->appendToChain($this->makeCompletionJob($resolvedFilename, $storagePath, $storageDisk));
-                }
-            }
+        if ($this->queueName !== null) {
+            $pending->onQueue($this->queueName);
         }
 
         return new ExportResult(
@@ -610,9 +763,7 @@ final class FileExporter
      */
     public function raw(): string
     {
-        $exportObject = $this->buildExportObject();
-
-        return $this->excel->raw($exportObject, $this->format->writerType());
+        return $this->engine->raw($this->buildExportObject(), $this->format);
     }
 
     // ──────────────────────────────────────────
@@ -622,19 +773,38 @@ final class FileExporter
     /**
      * @throws FileExportException
      */
-    private function buildExportObject(): CollectionExport|BaseQueryExport|MultiSheetExport
+    private function buildExportObject(): ExportDocument
     {
         if ($this->sheets !== []) {
-            return $this->buildMultiSheetExport();
+            $sheets = [];
+            foreach ($this->sheets as $sheetBuilder) {
+                $sheets[] = $sheetBuilder->build();
+            }
+
+            return $this->makeDocument($sheets);
         }
 
-        $this->defaultSheet->withProperties($this->documentProperties);
-
-        return $this->defaultSheet->buildResolved(
+        $sheets = $this->defaultSheet->buildResolved(
             $this->format,
             $this->autoSplitOverride ?? $this->config->autoSplit,
             $this->rowsPerSheetOverride ?? $this->config->rowsPerSheet,
             $this->maxRowsOverridden ? $this->maxRowsOverride : $this->config->maxRows,
+        );
+
+        return $this->makeDocument($sheets);
+    }
+
+    /**
+     * @param  array<int, \Anil\FileExport\Engine\Contracts\ExportSheet>  $sheets
+     */
+    private function makeDocument(array $sheets): ExportDocument
+    {
+        return new ExportDocument(
+            sheets: $sheets,
+            properties: $this->documentProperties,
+            defaultStyleCallback: $this->defaultStyleCallback,
+            background: $this->background,
+            precalculateFormulas: $this->precalculateFormulas,
         );
     }
 
@@ -678,40 +848,6 @@ final class FileExporter
             mailRecipients: $this->mailRecipients,
             mailSubject: $this->mailSubjectOverride,
             mailAttachThreshold: $this->mailAttachThresholdOverride,
-        );
-    }
-
-    private function makeCompletionJob(string $filename, string $path, string $disk): HandleExportCompletion
-    {
-        return new HandleExportCompletion(
-            disk: $disk,
-            path: $path,
-            filename: $filename,
-            fireEvent: $this->fireCompletionEvent,
-            notifiable: $this->notifiable,
-            notification: $this->notification,
-            callback: $this->completionCallback !== null ? new SerializableClosure($this->completionCallback) : null,
-            mailRecipients: $this->mailRecipients,
-            mailSubject: $this->mailSubjectOverride,
-            mailAttachThreshold: $this->mailAttachThresholdOverride,
-            expiresInDays: $this->expireDaysOverride,
-        );
-    }
-
-    /**
-     * @throws FileExportException
-     */
-    private function buildMultiSheetExport(): MultiSheetExport
-    {
-        $builtSheets = [];
-
-        foreach ($this->sheets as $sheetBuilder) {
-            $builtSheets[] = $sheetBuilder->build();
-        }
-
-        return new MultiSheetExport(
-            sheets: $builtSheets,
-            documentProperties: $this->documentProperties,
         );
     }
 

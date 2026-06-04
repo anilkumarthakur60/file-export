@@ -5,31 +5,19 @@ declare(strict_types=1);
 namespace Anil\FileExport\Exports;
 
 use Anil\FileExport\DataTransferObjects\StyleConfig;
+use Anil\FileExport\Engine\Contracts\ExportSheet;
 use Anil\FileExport\Exports\Concerns\HasSheetFormatting;
 use Closure;
 use Illuminate\Support\Collection;
 use Laravel\SerializableClosure\SerializableClosure;
-use Maatwebsite\Excel\Concerns\FromCollection;
-use Maatwebsite\Excel\Concerns\ShouldAutoSize;
-use Maatwebsite\Excel\Concerns\WithColumnFormatting;
-use Maatwebsite\Excel\Concerns\WithCustomCsvSettings;
-use Maatwebsite\Excel\Concerns\WithColumnWidths;
-use Maatwebsite\Excel\Concerns\WithEvents;
-use Maatwebsite\Excel\Concerns\WithHeadings;
-use Maatwebsite\Excel\Concerns\WithMapping;
-use Maatwebsite\Excel\Concerns\WithProperties;
-use Maatwebsite\Excel\Concerns\WithStyles;
-use Maatwebsite\Excel\Concerns\WithTitle;
 
 /**
  * Exports data from an in-memory Collection.
  *
- * Suitable for small-to-medium datasets that are already loaded in memory.
- * For large datasets, use QueryExport with automatic chunking instead.
- *
- * @implements WithMapping<mixed>
+ * Suitable for small-to-medium datasets already loaded in memory. For large
+ * datasets, use QueryExport (streamed from the database) instead.
  */
-class CollectionExport implements FromCollection, ShouldAutoSize, WithColumnFormatting, WithColumnWidths, WithCustomCsvSettings, WithEvents, WithHeadings, WithMapping, WithProperties, WithStyles, WithTitle
+class CollectionExport implements ExportSheet
 {
     use HasSheetFormatting;
 
@@ -48,6 +36,11 @@ class CollectionExport implements FromCollection, ShouldAutoSize, WithColumnForm
         $this->initializeFormatting($styleConfig);
     }
 
+    public function autoSize(): bool
+    {
+        return true;
+    }
+
     /**
      * @return array<int, string>
      */
@@ -57,27 +50,19 @@ class CollectionExport implements FromCollection, ShouldAutoSize, WithColumnForm
     }
 
     /**
-     * @return Collection<int, mixed>
+     * @return iterable<int, array<int, mixed>>
      */
-    public function collection(): Collection
+    public function rows(): iterable
     {
-        return $this->data;
+        foreach ($this->data as $row) {
+            /** @var array<int, mixed> $mapped */
+            $mapped = ($this->mappingCallback)($row);
+
+            yield $this->prependSerialNumber($mapped);
+        }
     }
 
     /**
-     * @return array<int, mixed>
-     */
-    public function map(mixed $row): array
-    {
-        /** @var array<int, mixed> $mapped */
-        $mapped = ($this->mappingCallback)($row);
-
-        return $this->prependSerialNumber($mapped);
-    }
-
-    /**
-     * Capture state for queueing, wrapping the mapping closure so it serializes.
-     *
      * @return array<mixed>
      */
     public function __serialize(): array
@@ -85,6 +70,10 @@ class CollectionExport implements FromCollection, ShouldAutoSize, WithColumnForm
         $data = get_object_vars($this);
 
         $data['mappingCallback'] = new SerializableClosure($this->mappingCallback);
+
+        if ($this->styleCallback instanceof Closure) {
+            $data['styleCallback'] = new SerializableClosure($this->styleCallback);
+        }
 
         return $data;
     }
@@ -103,4 +92,3 @@ class CollectionExport implements FromCollection, ShouldAutoSize, WithColumnForm
         }
     }
 }
-

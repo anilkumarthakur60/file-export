@@ -1,6 +1,6 @@
 # Laravel File Export
 
-A powerful, fluent file export package for Laravel built on top of [Maatwebsite/Excel](https://laravel-excel.com/).
+A powerful, fluent file export package for Laravel, built directly on [PhpSpreadsheet](https://phpspreadsheet.readthedocs.io/) with its own in-house export engine — no third-party Laravel-Excel wrapper.
 
 Export anything from a 10-row collection to a **10M+ row database table** — to XLSX, CSV, TSV,
 ODS, HTML, or PDF — and deliver it however you need: download it, store it on any disk, queue it
@@ -44,7 +44,7 @@ in the background, email it, or grab the raw bytes.
 
 - PHP 8.2+
 - Laravel 11, 12, or 13
-- Maatwebsite/Excel 3.1+
+- PhpOffice/PhpSpreadsheet 1.30+ (installed automatically)
 - `mpdf/mpdf` (only for PDF export)
 
 ---
@@ -740,15 +740,14 @@ composer test            # vendor/bin/pest
 vendor/bin/pest --parallel
 ```
 
-Because the `Excel` service is injected via the `Maatwebsite\Excel\Exporter` interface (not the
-facade), `Excel::fake()` works seamlessly in your application's tests:
+Exports render to a real disk, so tests assert against `Storage::fake()`:
 
 ```php
 use Anil\FileExport\Services\FileExporter;
-use Maatwebsite\Excel\Facades\Excel;
+use Illuminate\Support\Facades\Storage;
 
 it('exports users', function () {
-    Excel::fake();
+    Storage::fake('local');
 
     app(FileExporter::class)
         ->fromQuery(User::query())
@@ -756,19 +755,31 @@ it('exports users', function () {
         ->withMapping(fn ($u) => [$u->name])
         ->store();
 
-    Excel::assertStored('exports/users.xlsx', 'public');
+    Storage::disk('local')->assertExists('exports/users.xlsx');
 });
 ```
 
-Every dependency is constructor-injected, so the exporter is fully mockable:
+Queued exports dispatch a `PerformExport` job — assert with `Queue::fake()`:
 
 ```php
-use Maatwebsite\Excel\Exporter;
+use Anil\FileExport\Jobs\PerformExport;
+use Illuminate\Support\Facades\Queue;
 
-$excel = Mockery::mock(Exporter::class);
-$excel->shouldReceive('store')->once()->andReturn(true);
+Queue::fake();
+// ... ->queue();
+Queue::assertPushed(PerformExport::class);
+```
 
-$exporter = new FileExporter($config, $filenameGenerator, $urlResolver, $excel, $completionHandler);
+Every dependency is constructor-injected, so the rendering engine is fully swappable/mockable
+via the `Anil\FileExport\Engine\Contracts\ExportEngine` contract:
+
+```php
+use Anil\FileExport\Engine\Contracts\ExportEngine;
+
+$engine = Mockery::mock(ExportEngine::class);
+$engine->shouldReceive('store')->once()->andReturn(true);
+
+$exporter = new FileExporter($config, $filenameGenerator, $urlResolver, $engine, $completionHandler);
 ```
 
 ---
@@ -799,24 +810,31 @@ src/
 │   ├── ExportConfig.php                   # Full config as a typed readonly DTO
 │   ├── ExportResult.php                   # Result from store()/queue() (filename/url/format/mime/…)
 │   └── StyleConfig.php                    # Styling config readonly DTO
+├── Engine/
+│   ├── Contracts/
+│   │   ├── ExportEngine.php               # Rendering-engine contract (store/download/raw)
+│   │   └── ExportSheet.php                # A renderable sheet (headings + streaming rows + style)
+│   ├── ExportDocument.php                 # Sheets + document properties (engine input)
+│   ├── SheetStyler.php                    # Applies PhpSpreadsheet styling to a worksheet
+│   ├── SpreadsheetEngine.php              # Default engine (PhpSpreadsheet + temp files)
+│   └── StreamingCsvWriter.php             # O(1)-memory CSV/TSV streaming writer
 ├── Enums/
-│   └── ExportFormat.php                   # XLSX, CSV, TSV, ODS, HTML, PDF (+ hasRowLimit)
+│   └── ExportFormat.php                   # XLSX, CSV, TSV, ODS, HTML, PDF (+ makeWriter/PDF driver)
 ├── Events/
 │   └── ExportCompleted.php                # Fired when an export finishes
 ├── Exceptions/
 │   └── FileExportException.php            # Named constructors for each error
 ├── Exports/
 │   ├── Concerns/
-│   │   └── HasSheetFormatting.php         # Shared formatting (zero duplication)
-│   ├── BaseQueryExport.php                # Shared chunked-query logic (+ serialization)
-│   ├── CollectionExport.php               # FromCollection
-│   ├── LargeQueryExport.php               # Query export without auto-sizing (split/large)
-│   ├── MultiSheetExport.php               # WithMultipleSheets wrapper
-│   └── QueryExport.php                    # FromQuery + chunked + auto-sized
+│   │   └── HasSheetFormatting.php         # Shared sheet metadata (zero duplication)
+│   ├── BaseQueryExport.php                # Shared streaming-query sheet (+ serialization)
+│   ├── CollectionExport.php               # In-memory collection sheet
+│   ├── LargeQueryExport.php               # Query sheet without auto-sizing (split/large)
+│   └── QueryExport.php                    # Auto-sized query sheet
 ├── Facades/
 │   └── FileExport.php                     # @mixin FileExporter
 ├── Jobs/
-│   └── HandleExportCompletion.php         # Chained after queued writes (completion actions)
+│   └── PerformExport.php                  # Queued render + store + completion (one job)
 ├── Mail/
 │   └── ExportReadyMail.php                # Attach-or-link email of the export
 ├── Providers/

@@ -6,18 +6,16 @@ namespace Anil\FileExport\Exports\Concerns;
 
 use Anil\FileExport\DataTransferObjects\CsvSettings;
 use Anil\FileExport\DataTransferObjects\StyleConfig;
-use Maatwebsite\Excel\Events\AfterSheet;
-use PhpOffice\PhpSpreadsheet\Style\Alignment;
-use PhpOffice\PhpSpreadsheet\Style\Fill;
-use PhpOffice\PhpSpreadsheet\Worksheet\Worksheet;
+use Closure;
+use PhpOffice\PhpSpreadsheet\Cell\IValueBinder;
 
 /**
- * Provides shared formatting logic for export classes.
+ * Shared sheet metadata for export classes.
  *
- * Implements the Maatwebsite concerns: WithStyles, WithEvents,
- * WithColumnFormatting, WithColumnWidths, WithTitle, WithProperties.
- *
- * Used by CollectionExport and QueryExport to eliminate code duplication.
+ * Holds styling, column formats/widths, CSV settings, the sheet title, and
+ * serial-number state, and exposes the ExportSheet getters that the engine
+ * reads. The actual PhpSpreadsheet styling is applied by the engine's
+ * SheetStyler — this trait carries configuration only.
  */
 trait HasSheetFormatting
 {
@@ -31,20 +29,35 @@ trait HasSheetFormatting
 
     private ?string $sheetTitle = null;
 
-    /**
-     * When true, skip the expensive full-range styling (text wrapping and
-     * auto-filter) that is impractical on very large or auto-split sheets.
-     */
-    private bool $disableLargeSheetStyling = false;
-
     /** @var array<string, string> */
     protected array $columnFormats = [];
 
     /** @var array<string, float|int> */
     private array $columnWidths = [];
 
-    /** @var array<string, string> */
-    private array $documentProperties = [];
+    /**
+     * When true, skip the expensive full-range styling (text wrapping and
+     * auto-filter) that is impractical on very large or auto-split sheets.
+     */
+    private bool $disableLargeSheetStyling = false;
+
+    protected ?Closure $styleCallback = null;
+
+    private string $startCellCoordinate = 'A1';
+
+    private bool $useStrictNulls = false;
+
+    private ?IValueBinder $valueBinder = null;
+
+    /** @var array<int, \PhpOffice\PhpSpreadsheet\Chart\Chart> */
+    private array $charts = [];
+
+    /** @var array<int, \PhpOffice\PhpSpreadsheet\Worksheet\BaseDrawing> */
+    private array $drawings = [];
+
+    // ──────────────────────────────────────────
+    // Fluent configuration
+    // ──────────────────────────────────────────
 
     /**
      * Include a serial number column as the first column.
@@ -91,10 +104,6 @@ trait HasSheetFormatting
 
     /**
      * Skip full-range styling (text wrapping and auto-filter) for this sheet.
-     *
-     * Applying these over hundreds of thousands of rows is prohibitively slow,
-     * so they are disabled on large/auto-split sheets. The (cheap) header
-     * freeze is still applied.
      */
     public function disableLargeSheetStyling(bool $disable = true): static
     {
@@ -104,9 +113,75 @@ trait HasSheetFormatting
     }
 
     /**
+     * Style the rendered worksheet via a callback receiving the PhpSpreadsheet Worksheet.
+     *
+     * @param  Closure(\PhpOffice\PhpSpreadsheet\Worksheet\Worksheet): void  $callback
+     */
+    public function styleUsing(Closure $callback): static
+    {
+        $this->styleCallback = $callback;
+
+        return $this;
+    }
+
+    /**
+     * Set the top-left cell where the sheet's data begins (e.g. "B2").
+     */
+    public function startCell(string $coordinate): static
+    {
+        $this->startCellCoordinate = $coordinate;
+
+        return $this;
+    }
+
+    /**
+     * Use strict null comparison when writing cell values.
+     */
+    public function strictNulls(bool $strict = true): static
+    {
+        $this->useStrictNulls = $strict;
+
+        return $this;
+    }
+
+    /**
+     * Set a custom PhpSpreadsheet value binder for cell type inference.
+     */
+    public function bindValuesUsing(IValueBinder $binder): static
+    {
+        $this->valueBinder = $binder;
+
+        return $this;
+    }
+
+    /**
+     * Attach charts to the worksheet (xlsx only).
+     *
+     * @param  array<int, \PhpOffice\PhpSpreadsheet\Chart\Chart>  $charts
+     */
+    public function withCharts(array $charts): static
+    {
+        $this->charts = $charts;
+
+        return $this;
+    }
+
+    /**
+     * Attach images/drawings to the worksheet (xlsx only).
+     *
+     * @param  array<int, \PhpOffice\PhpSpreadsheet\Worksheet\BaseDrawing>  $drawings
+     */
+    public function withImages(array $drawings): static
+    {
+        $this->drawings = $drawings;
+
+        return $this;
+    }
+
+    /**
      * Set column number/date formats using PhpSpreadsheet format constants.
      *
-     * @param  array<string, string>  $formats  Keyed by column letter (e.g., ['A' => NumberFormat::FORMAT_DATE_DDMMYYYY]).
+     * @param  array<string, string>  $formats  Keyed by column letter.
      */
     public function withColumnFormats(array $formats): static
     {
@@ -116,7 +191,7 @@ trait HasSheetFormatting
     }
 
     /**
-     * Set the sheet tab title (visible in multi-sheet workbooks).
+     * Set the sheet tab title.
      */
     public function withTitle(string $title): static
     {
@@ -128,7 +203,7 @@ trait HasSheetFormatting
     /**
      * Set explicit column widths. Overrides auto-size for specified columns.
      *
-     * @param  array<string, float|int>  $widths  Keyed by column letter (e.g., ['A' => 20, 'B' => 35.5]).
+     * @param  array<string, float|int>  $widths  Keyed by column letter.
      */
     public function withColumnWidths(array $widths): static
     {
@@ -137,29 +212,9 @@ trait HasSheetFormatting
         return $this;
     }
 
-    /**
-     * Set document metadata properties (title, creator, company, description, etc.).
-     *
-     * @param  array<string, string>  $properties  Keyed by property name (e.g., ['title' => 'Report', 'creator' => 'System']).
-     */
-    public function withProperties(array $properties): static
-    {
-        $this->documentProperties = $properties;
-
-        return $this;
-    }
-
     // ──────────────────────────────────────────
-    // Maatwebsite concern implementations
+    // ExportSheet getters
     // ──────────────────────────────────────────
-
-    /**
-     * @return array<string, string>
-     */
-    public function columnFormats(): array
-    {
-        return $this->columnFormats;
-    }
 
     /**
      * Return the sheet tab title.
@@ -167,6 +222,22 @@ trait HasSheetFormatting
     public function title(): string
     {
         return $this->sheetTitle ?? 'Sheet1';
+    }
+
+    /**
+     * Styling applied to this sheet.
+     */
+    public function styling(): StyleConfig
+    {
+        return $this->styleConfig;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    public function columnFormats(): array
+    {
+        return $this->columnFormats;
     }
 
     /**
@@ -178,96 +249,69 @@ trait HasSheetFormatting
     }
 
     /**
-     * @return array<string, string>
+     * Whether full-range styling (wrap text + auto-filter) should be applied.
      */
-    public function properties(): array
+    public function applyFullRangeStyling(): bool
     {
-        return $this->documentProperties;
+        return ! $this->disableLargeSheetStyling;
     }
 
     /**
-     * CSV/TSV writer settings (honoured only by delimited-text formats).
-     *
-     * @return array<string, string|bool>
+     * CSV/TSV writer settings (defaults when none were set).
      */
-    public function getCsvSettings(): array
+    public function csvSettings(): CsvSettings
     {
-        return $this->csvSettings?->toArray() ?? [];
+        return $this->csvSettings ?? new CsvSettings;
     }
 
     /**
-     * Apply header styling: bold, background color, font color, alignment.
-     *
-     * @return array<int, array<string, mixed>>
+     * The top-left cell where the sheet's data begins.
      */
-    public function styles(Worksheet $sheet): array
+    public function startCellCoordinate(): string
     {
-        /** @var array<string, array<string, mixed>> $headerStyle */
-        $headerStyle = [];
-
-        /** @var array<string, mixed> $font */
-        $font = [];
-
-        if ($this->styleConfig->headerBold) {
-            $font['bold'] = true;
-        }
-
-        if ($this->styleConfig->headerFontSize !== 12) {
-            $font['size'] = $this->styleConfig->headerFontSize;
-        }
-
-        if ($this->styleConfig->headerFontColor !== '') {
-            $font['color'] = ['argb' => $this->styleConfig->headerFontColor];
-        }
-
-        if ($font !== []) {
-            $headerStyle['font'] = $font;
-        }
-
-        if ($this->styleConfig->headerBackground !== '') {
-            $headerStyle['fill'] = [
-                'fillType' => Fill::FILL_SOLID,
-                'startColor' => ['argb' => $this->styleConfig->headerBackground],
-            ];
-        }
-
-        $headerStyle['alignment'] = [
-            'horizontal' => Alignment::HORIZONTAL_CENTER,
-            'vertical' => Alignment::VERTICAL_CENTER,
-        ];
-
-        return [1 => $headerStyle];
+        return $this->startCellCoordinate;
     }
 
     /**
-     * Register after-sheet events: text wrapping, header freeze, auto-filter.
-     *
-     * @return array<string, \Closure>
+     * Whether to use strict null comparison when writing cell values.
      */
-    public function registerEvents(): array
+    public function strictNullComparison(): bool
     {
-        return [
-            AfterSheet::class => function (AfterSheet $event): void {
-                $sheet = $event->sheet->getDelegate();
-                $highestRow = $sheet->getHighestRow();
-                $highestColumn = $sheet->getHighestColumn();
+        return $this->useStrictNulls;
+    }
 
-                if ($this->styleConfig->wrapText && ! $this->disableLargeSheetStyling) {
-                    $sheet->getStyle("A1:{$highestColumn}{$highestRow}")
-                        ->getAlignment()
-                        ->setWrapText(true)
-                        ->setVertical(Alignment::VERTICAL_TOP);
-                }
+    /**
+     * The worksheet styling callback, or null.
+     *
+     * @return Closure(\PhpOffice\PhpSpreadsheet\Worksheet\Worksheet): void|null
+     */
+    public function styleCallback(): ?Closure
+    {
+        return $this->styleCallback;
+    }
 
-                if ($this->styleConfig->freezeHeader) {
-                    $sheet->freezePane('A2');
-                }
+    /**
+     * The custom value binder, or null.
+     */
+    public function valueBinder(): ?IValueBinder
+    {
+        return $this->valueBinder;
+    }
 
-                if ($this->styleConfig->autoFilter && ! $this->disableLargeSheetStyling) {
-                    $sheet->setAutoFilter("A1:{$highestColumn}1");
-                }
-            },
-        ];
+    /**
+     * @return array<int, \PhpOffice\PhpSpreadsheet\Chart\Chart>
+     */
+    public function charts(): array
+    {
+        return $this->charts;
+    }
+
+    /**
+     * @return array<int, \PhpOffice\PhpSpreadsheet\Worksheet\BaseDrawing>
+     */
+    public function drawings(): array
+    {
+        return $this->drawings;
     }
 
     // ──────────────────────────────────────────

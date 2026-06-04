@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 use Anil\FileExport\DataTransferObjects\ExportResult;
 use Anil\FileExport\Events\ExportCompleted;
-use Anil\FileExport\Jobs\HandleExportCompletion;
+use Anil\FileExport\Jobs\PerformExport;
 use Anil\FileExport\Mail\ExportReadyMail;
 use Anil\FileExport\Tests\Fixtures\ExportDoneNotification;
 use Anil\FileExport\Tests\Fixtures\User;
@@ -12,11 +12,10 @@ use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Queue;
-use Maatwebsite\Excel\Facades\Excel;
-use Maatwebsite\Excel\Jobs\QueueExport;
+use Illuminate\Support\Facades\Storage;
 
 it('fires the completion event on store', function (): void {
-    Excel::fake();
+    Storage::fake('local');
     Event::fake([ExportCompleted::class]);
     seedUsers(2);
 
@@ -32,7 +31,7 @@ it('fires the completion event on store', function (): void {
 });
 
 it('can disable the completion event', function (): void {
-    Excel::fake();
+    Storage::fake('local');
     Event::fake([ExportCompleted::class]);
     seedUsers(1);
 
@@ -47,7 +46,7 @@ it('can disable the completion event', function (): void {
 });
 
 it('emails the export on store', function (): void {
-    Excel::fake();
+    Storage::fake('local');
     Mail::fake();
     seedUsers(2);
 
@@ -64,7 +63,7 @@ it('emails the export on store', function (): void {
 });
 
 it('sends a notification on store', function (): void {
-    Excel::fake();
+    Storage::fake('local');
     Notification::fake();
     seedUsers(1);
     $user = User::query()->firstOrFail();
@@ -80,7 +79,7 @@ it('sends a notification on store', function (): void {
 });
 
 it('runs a completion callback on store', function (): void {
-    Excel::fake();
+    Storage::fake('local');
     seedUsers(1);
 
     $captured = null;
@@ -93,15 +92,14 @@ it('runs a completion callback on store', function (): void {
         })
         ->store();
 
-    $this->assertInstanceOf(ExportResult::class, $captured);
-    $this->assertSame('export.xlsx', $captured->filename);
+    expect($captured)->toBeInstanceOf(ExportResult::class)
+        ->and($captured->filename)->toBe('export.xlsx');
 });
 
-it('appends the completion job to the queue chain', function (): void {
+it('carries the completion config on the queued job', function (): void {
     Queue::fake();
     seedUsers(2);
 
-    // A factory closure keeps the query serializable for the queue.
     fileExporter()
         ->fromQuery(fn () => User::query())
         ->withHeaders(['Name'])
@@ -109,9 +107,7 @@ it('appends the completion job to the queue chain', function (): void {
         ->notifyMail('boss@example.com')
         ->queue();
 
-    Queue::assertPushed(QueueExport::class, function (QueueExport $job): bool {
-        return collect($job->chained)->contains(
-            fn ($chained) => str_contains((string) $chained, class_basename(HandleExportCompletion::class))
-        );
+    Queue::assertPushed(PerformExport::class, function (PerformExport $job): bool {
+        return $job->mailRecipients === ['boss@example.com'];
     });
 });

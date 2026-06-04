@@ -9,7 +9,6 @@ use Anil\FileExport\Enums\ExportFormat;
 use Anil\FileExport\Providers\FileExportServiceProvider;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\Facades\Schema;
-use Maatwebsite\Excel\ExcelServiceProvider;
 use Orchestra\Testbench\TestCase as Orchestra;
 
 abstract class TestCase extends Orchestra
@@ -42,7 +41,6 @@ abstract class TestCase extends Orchestra
     protected function getPackageProviders($app): array
     {
         return [
-            ExcelServiceProvider::class,
             FileExportServiceProvider::class,
         ];
     }

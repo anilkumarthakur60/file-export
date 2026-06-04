@@ -1,14 +1,14 @@
 {
   "name": "anil/file-export",
-  "description": "A powerful, fluent file export package for Laravel built on top of Maatwebsite/Excel",
+  "description": "A powerful, fluent file export package for Laravel, built on PhpSpreadsheet with its own export engine.",
   "keywords": [
     "anil",
     "csv",
     "excel",
     "export",
     "laravel",
-    "laravel-excel",
-    "maatwebsite",
+    "phpspreadsheet",
+    "spreadsheet",
     "multi-sheet",
     "ods",
     "pdf"
@@ -31,19 +31,25 @@
   ],
   "require": {
     "php": "^8.2",
+    "illuminate/bus": "^11.0|^12.0|^13.0",
+    "illuminate/contracts": "^11.0|^12.0|^13.0",
+    "illuminate/filesystem": "^11.0|^12.0|^13.0",
     "illuminate/http": "^11.0|^12.0|^13.0",
     "illuminate/support": "^11.0|^12.0|^13.0",
     "laravel/serializable-closure": "^1.3|^2.0|^3.0",
-    "maatwebsite/excel": "^3.1"
+    "phpoffice/phpspreadsheet": "^1.30|^2.0|^3.0"
   },
   "require-dev": {
     "larastan/larastan": "^2.0||^3.0",
+    "mpdf/mpdf": "^8.2",
     "orchestra/testbench": "^9.0||^10.0",
     "pestphp/pest": "^3.0||^4.0",
     "phpunit/phpunit": "^10.0||^11.0||^12.0"
   },
   "suggest": {
-    "mpdf/mpdf": "Required for PDF export format support"
+    "mpdf/mpdf": "Required for PDF export (alternatively dompdf/dompdf or tecnickcom/tcpdf)",
+    "dompdf/dompdf": "Alternative PDF rendering driver",
+    "tecnickcom/tcpdf": "Alternative PDF rendering driver"
   },
   "extra": {
     "laravel": {

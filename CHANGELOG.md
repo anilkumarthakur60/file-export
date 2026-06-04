@@ -9,6 +9,18 @@ A major release focused on **scale** (small projects → 10M+ row databases),
 **delivery** (email, queued completion hooks), and **developer experience**.
 v2 does **not** maintain backward compatibility with v1.
 
+### Engine
+
+- **Removed the `maatwebsite/excel` dependency entirely.** The package now ships its
+  own export engine built directly on `phpoffice/phpspreadsheet`
+  (`Anil\FileExport\Engine\*`): an `ExportEngine` contract, a `SpreadsheetEngine`
+  renderer for xlsx/ods/html/pdf, and a `StreamingCsvWriter` that writes CSV/TSV
+  row-by-row at O(1) memory for unbounded exports.
+- Queued exports now dispatch a single `PerformExport` job that renders, stores, and runs
+  the completion actions inline — no third-party job chaining.
+- PDF rendering auto-detects an installed driver (mpdf → dompdf → tcpdf) and throws a
+  clear error if none is present.
+
 ### Added
 
 - **Email delivery** — `->notifyMail($recipients)` sends the export, attaching the

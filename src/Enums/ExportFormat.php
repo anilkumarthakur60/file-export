@@ -4,12 +4,22 @@ declare(strict_types=1);
 
 namespace Anil\FileExport\Enums;
 
-use Maatwebsite\Excel\Excel;
+use Anil\FileExport\Exceptions\FileExportException;
+use PhpOffice\PhpSpreadsheet\Spreadsheet;
+use PhpOffice\PhpSpreadsheet\Writer\Html as HtmlWriter;
+use PhpOffice\PhpSpreadsheet\Writer\IWriter;
+use PhpOffice\PhpSpreadsheet\Writer\Ods as OdsWriter;
+use PhpOffice\PhpSpreadsheet\Writer\Pdf\Dompdf as DompdfWriter;
+use PhpOffice\PhpSpreadsheet\Writer\Pdf\Mpdf as MpdfWriter;
+use PhpOffice\PhpSpreadsheet\Writer\Pdf\Tcpdf as TcpdfWriter;
+use PhpOffice\PhpSpreadsheet\Writer\Xlsx as XlsxWriter;
 
 /**
  * Supported file formats for export.
  *
- * PDF format requires the mpdf/mpdf package to be installed.
+ * Delimited-text formats (CSV, TSV) are rendered by the package's own
+ * streaming writer; the remaining formats are rendered via PhpSpreadsheet.
+ * PDF requires one of mpdf/mpdf, dompdf/dompdf, or tecnickcom/tcpdf.
  */
 enum ExportFormat: string
 {
@@ -19,21 +29,6 @@ enum ExportFormat: string
     case ODS = 'ods';
     case HTML = 'html';
     case PDF = 'pdf';
-
-    /**
-     * Get the Maatwebsite writer type constant for this format.
-     */
-    public function writerType(): string
-    {
-        return match ($this) {
-            self::XLSX => Excel::XLSX,
-            self::CSV => Excel::CSV,
-            self::TSV => Excel::TSV,
-            self::ODS => Excel::ODS,
-            self::HTML => Excel::HTML,
-            self::PDF => Excel::MPDF,
-        };
-    }
 
     /**
      * Get the file extension for this format.
@@ -59,11 +54,19 @@ enum ExportFormat: string
     }
 
     /**
-     * Whether this is a delimited text format that honours CSV settings.
+     * Whether this is a delimited text format rendered by the streaming writer.
      */
     public function isDelimitedText(): bool
     {
         return $this === self::CSV || $this === self::TSV;
+    }
+
+    /**
+     * Whether this format is written by the package's own streaming CSV writer.
+     */
+    public function usesStreamingWriter(): bool
+    {
+        return $this->isDelimitedText();
     }
 
     /**
@@ -79,5 +82,46 @@ enum ExportFormat: string
             self::HTML => 'text/html',
             self::PDF => 'application/pdf',
         };
+    }
+
+    /**
+     * Create the PhpSpreadsheet writer for this format.
+     *
+     * Not valid for delimited-text formats (CSV/TSV) — those are streamed by
+     * the package's own writer.
+     *
+     * @throws FileExportException
+     */
+    public function makeWriter(Spreadsheet $spreadsheet): IWriter
+    {
+        return match ($this) {
+            self::XLSX => new XlsxWriter($spreadsheet),
+            self::ODS => new OdsWriter($spreadsheet),
+            self::HTML => new HtmlWriter($spreadsheet),
+            self::PDF => $this->makePdfWriter($spreadsheet),
+            self::CSV, self::TSV => throw FileExportException::streamingFormatHasNoWriter($this->value),
+        };
+    }
+
+    /**
+     * Resolve an available PDF writer, preferring mpdf, then dompdf, then tcpdf.
+     *
+     * @throws FileExportException
+     */
+    private function makePdfWriter(Spreadsheet $spreadsheet): IWriter
+    {
+        if (class_exists(\Mpdf\Mpdf::class)) {
+            return new MpdfWriter($spreadsheet);
+        }
+
+        if (class_exists(\Dompdf\Dompdf::class)) {
+            return new DompdfWriter($spreadsheet);
+        }
+
+        if (class_exists(\TCPDF::class)) {
+            return new TcpdfWriter($spreadsheet);
+        }
+
+        throw FileExportException::pdfDriverMissing();
     }
 }

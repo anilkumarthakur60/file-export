@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
+use Anil\FileExport\Jobs\PerformExport;
 use Anil\FileExport\Tests\Fixtures\User;
 use Illuminate\Support\Facades\Queue;
-use Maatwebsite\Excel\Jobs\QueueExport;
 
 it('dispatches on the overridden connection and queue', function (): void {
     Queue::fake();
@@ -18,7 +18,7 @@ it('dispatches on the overridden connection and queue', function (): void {
         ->onQueue('exports')
         ->queue();
 
-    Queue::assertPushed(QueueExport::class, function (QueueExport $job): bool {
+    Queue::assertPushed(PerformExport::class, function (PerformExport $job): bool {
         return $job->connection === 'redis' && $job->queue === 'exports';
     });
 });
@@ -34,7 +34,7 @@ it('uses the configured queue by default', function (): void {
         ->withMapping(fn (User $u) => [$u->name])
         ->queue();
 
-    Queue::assertPushed(QueueExport::class, function (QueueExport $job): bool {
+    Queue::assertPushed(PerformExport::class, function (PerformExport $job): bool {
         return $job->queue === 'configured-exports';
     });
 });

@@ -86,6 +86,27 @@ final class FileExportException extends RuntimeException
     }
 
     /**
+     * PDF export was requested but no supported PDF driver is installed.
+     */
+    public static function pdfDriverMissing(): self
+    {
+        return new self(
+            'PDF export requires a PDF rendering library. Install one of: '.
+            'mpdf/mpdf, dompdf/dompdf, or tecnickcom/tcpdf.'
+        );
+    }
+
+    /**
+     * A PhpSpreadsheet writer was requested for a streamed (CSV/TSV) format.
+     */
+    public static function streamingFormatHasNoWriter(string $format): self
+    {
+        return new self(
+            "The '{$format}' format is written by the streaming CSV writer, not a PhpSpreadsheet writer."
+        );
+    }
+
+    /**
      * Auto-split was requested for a format that does not support multiple sheets.
      */
     public static function autoSplitUnsupported(string $format): self
