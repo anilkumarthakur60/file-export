@@ -21,12 +21,16 @@ final readonly class ExportResult
      * @param  string|null  $url  The download URL. Null for queued exports (file may not exist yet).
      * @param  string|null  $path  The file path relative to disk root. Null when not stored.
      * @param  string|null  $disk  The filesystem disk name. Null when not stored.
+     * @param  string|null  $format  The file format/extension (e.g., "xlsx").
+     * @param  string|null  $mimeType  The MIME type (e.g., "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet").
      */
     public function __construct(
         public string $filename,
         public ?string $url = null,
         public ?string $path = null,
         public ?string $disk = null,
+        public ?string $format = null,
+        public ?string $mimeType = null,
     ) {}
 
     /**
@@ -40,7 +44,7 @@ final readonly class ExportResult
     /**
      * Convert the result into a plain array.
      *
-     * @return array{success: true, filename: string, url: string|null, path: string|null, disk: string|null}
+     * @return array{success: true, filename: string, url: string|null, path: string|null, disk: string|null, format: string|null, mime_type: string|null}
      */
     public function toArray(): array
     {
@@ -50,6 +54,8 @@ final readonly class ExportResult
             'url' => $this->url,
             'path' => $this->path,
             'disk' => $this->disk,
+            'format' => $this->format,
+            'mime_type' => $this->mimeType,
         ];
     }
 }

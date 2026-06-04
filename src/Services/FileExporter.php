@@ -8,21 +8,28 @@ use Anil\FileExport\Builders\SheetBuilder;
 use Anil\FileExport\Contracts\Exportable;
 use Anil\FileExport\Contracts\FilenameGenerator;
 use Anil\FileExport\Contracts\UrlResolver;
+use Anil\FileExport\DataTransferObjects\CompletionConfig;
+use Anil\FileExport\DataTransferObjects\CsvSettings;
 use Anil\FileExport\DataTransferObjects\ExportConfig;
 use Anil\FileExport\DataTransferObjects\ExportResult;
 use Anil\FileExport\DataTransferObjects\StyleConfig;
 use Anil\FileExport\Enums\ExportFormat;
 use Anil\FileExport\Exceptions\FileExportException;
+use Anil\FileExport\Exports\BaseQueryExport;
 use Anil\FileExport\Exports\CollectionExport;
 use Anil\FileExport\Exports\MultiSheetExport;
-use Anil\FileExport\Exports\QueryExport;
+use Anil\FileExport\Jobs\HandleExportCompletion;
 use Closure;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Eloquent\Relations\Relation;
+use Illuminate\Foundation\Bus\PendingDispatch;
+use Illuminate\Notifications\Notification;
 use Illuminate\Support\Collection;
-use Maatwebsite\Excel\Excel;
+use Illuminate\Support\Traits\Conditionable;
+use Illuminate\Support\Traits\Macroable;
+use Laravel\SerializableClosure\SerializableClosure;
+use Maatwebsite\Excel\Exporter;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
-use Symfony\Component\HttpFoundation\Response;
 
 /**
  * The main entry point for creating file exports.
@@ -42,6 +49,9 @@ use Symfony\Component\HttpFoundation\Response;
  */
 final class FileExporter
 {
+    use Conditionable;
+    use Macroable;
+
     /** @var SheetBuilder The builder for single-sheet exports. */
     private SheetBuilder $defaultSheet;
 
@@ -57,20 +67,46 @@ final class FileExporter
     /** @var array<string, string> */
     private array $documentProperties = [];
 
+    // Completion options (apply to store() and queue()).
+    private bool $fireCompletionEvent = true;
+
+    private ?object $notifiable = null;
+
+    private ?Notification $notification = null;
+
+    private ?Closure $completionCallback = null;
+
+    /** @var array<int, string> */
+    private array $mailRecipients = [];
+
+    // Auto-split overrides (null = fall back to config).
+    private ?bool $autoSplitOverride = null;
+
+    private ?int $rowsPerSheetOverride = null;
+
+    // Queue targeting for queued exports.
+    private ?string $queueConnection = null;
+
+    private ?string $queueName = null;
+
     /**
      * @param  ExportConfig  $config  Package configuration (resolved from config file).
      * @param  FilenameGenerator  $filenameGenerator  Generates filenames for stored exports.
      * @param  UrlResolver  $urlResolver  Resolves download URLs for stored exports.
-     * @param  Excel  $excel  The Maatwebsite Excel service (injected, not facade).
+     * @param  Exporter  $excel  The Maatwebsite Excel service (injected via interface, not facade).
+     * @param  ExportCompletionHandler  $completionHandler  Runs post-export actions (event/notify/callback/email).
      */
     public function __construct(
         private readonly ExportConfig $config,
         private readonly FilenameGenerator $filenameGenerator,
         private readonly UrlResolver $urlResolver,
-        private readonly Excel $excel,
+        private readonly Exporter $excel,
+        private readonly ExportCompletionHandler $completionHandler,
     ) {
         $this->format = $this->config->defaultFormat;
         $this->disk = $this->config->disk;
+        $this->queueConnection = $this->config->queueConnection;
+        $this->queueName = $this->config->queueName;
         $this->defaultSheet = $this->createSheetBuilder();
 
         // Apply default document properties from config
@@ -89,11 +125,13 @@ final class FileExporter
     /**
      * Set an Eloquent query as the data source.
      *
-     * Uses chunked processing for memory efficiency with large datasets.
+     * Uses chunked processing for memory efficiency with large datasets. Pass a
+     * factory closure (fn () => User::query()) rather than a live builder when
+     * the export will be queued, so the query can be rebuilt inside the job.
      *
-     * @param  EloquentBuilder<\Illuminate\Database\Eloquent\Model>|Relation<\Illuminate\Database\Eloquent\Model, \Illuminate\Database\Eloquent\Model, mixed>  $builder
+     * @param  EloquentBuilder<\Illuminate\Database\Eloquent\Model>|Relation<\Illuminate\Database\Eloquent\Model, \Illuminate\Database\Eloquent\Model, mixed>|(Closure(): (EloquentBuilder<\Illuminate\Database\Eloquent\Model>|Relation<\Illuminate\Database\Eloquent\Model, \Illuminate\Database\Eloquent\Model, mixed>))  $builder
      */
-    public function fromQuery(EloquentBuilder|Relation $builder): self
+    public function fromQuery(EloquentBuilder|Relation|Closure $builder): self
     {
         $this->defaultSheet->fromQuery($builder);
 
@@ -174,6 +212,16 @@ final class FileExporter
     public function withStyling(StyleConfig $styling): self
     {
         $this->defaultSheet->withStyling($styling);
+
+        return $this;
+    }
+
+    /**
+     * Override the CSV/TSV writer settings for this export (delimiter, BOM, etc.).
+     */
+    public function withCsvSettings(CsvSettings $settings): self
+    {
+        $this->defaultSheet->withCsvSettings($settings);
 
         return $this;
     }
@@ -291,6 +339,100 @@ final class FileExporter
         return $this;
     }
 
+    /**
+     * Enable or disable auto-splitting for this export, optionally overriding
+     * the rows-per-sheet threshold.
+     *
+     * Auto-split applies only to single-sheet query exports in formats with a
+     * per-sheet row limit (xlsx, ods). When the row count exceeds the
+     * threshold, the export is transparently spread across multiple sheets.
+     */
+    public function autoSplit(?bool $enabled = true, ?int $rowsPerSheet = null): self
+    {
+        $this->autoSplitOverride = $enabled;
+        $this->rowsPerSheetOverride = $rowsPerSheet;
+
+        return $this;
+    }
+
+    // ──────────────────────────────────────────
+    // Completion hooks (store() and queue())
+    // ──────────────────────────────────────────
+
+    /**
+     * Run a callback with the ExportResult once the export has finished.
+     *
+     * On queue(), the callback runs after the file is written — it must be
+     * serializable (its captured variables too), as it is queued via the
+     * chained completion job.
+     *
+     * @param  Closure(ExportResult): void  $callback
+     */
+    public function onCompletion(Closure $callback): self
+    {
+        $this->completionCallback = $callback;
+
+        return $this;
+    }
+
+    /**
+     * Send a notification to a notifiable once the export has finished.
+     *
+     * @param  object  $notifiable  Typically an Eloquent model using the Notifiable trait.
+     */
+    public function notify(object $notifiable, Notification $notification): self
+    {
+        $this->notifiable = $notifiable;
+        $this->notification = $notification;
+
+        return $this;
+    }
+
+    /**
+     * Email the finished export to the given recipients.
+     *
+     * The file is attached when it is at or below the configured size
+     * threshold; otherwise a download link is emailed instead.
+     *
+     * @param  string|array<int, string>  $recipients
+     */
+    public function notifyMail(string|array $recipients): self
+    {
+        $this->mailRecipients = is_array($recipients) ? array_values($recipients) : [$recipients];
+
+        return $this;
+    }
+
+    /**
+     * Toggle dispatching the ExportCompleted event (enabled by default).
+     */
+    public function withCompletionEvent(bool $enabled = true): self
+    {
+        $this->fireCompletionEvent = $enabled;
+
+        return $this;
+    }
+
+    /**
+     * Set the queue connection used by queue() (overrides config).
+     */
+    public function onConnection(?string $connection): self
+    {
+        $this->queueConnection = $connection;
+
+        return $this;
+    }
+
+    /**
+     * Set the queue name used by queue() (overrides config).
+     */
+    public function onQueue(?string $queue): self
+    {
+        $this->queueName = $queue;
+
+        return $this;
+    }
+
     // ──────────────────────────────────────────
     // Output methods
     // ──────────────────────────────────────────
@@ -315,12 +457,21 @@ final class FileExporter
 
         $downloadUrl = $this->urlResolver->resolve($storageDisk, $storagePath);
 
-        return new ExportResult(
+        $result = new ExportResult(
             filename: $resolvedFilename,
             url: $downloadUrl,
             path: $storagePath,
             disk: $storageDisk,
+            format: $this->format->value,
+            mimeType: $this->format->mimeType(),
         );
+
+        $completion = $this->completionConfig();
+        if ($completion->hasWork()) {
+            $this->completionHandler->handle($result, $completion);
+        }
+
+        return $result;
     }
 
     /**
@@ -347,17 +498,41 @@ final class FileExporter
      */
     public function queue(): ExportResult
     {
+        $this->assertQueueable();
+
         $exportObject = $this->buildExportObject();
         $resolvedFilename = $this->filenameGenerator->generate($this->filename, $this->format);
         $storagePath = $this->config->path.'/'.$resolvedFilename;
         $storageDisk = $this->disk ?? $this->config->disk;
 
-        $this->excel->queue($exportObject, $storagePath, $storageDisk, $this->format->writerType());
+        $pending = $this->excel->queue($exportObject, $storagePath, $storageDisk, $this->format->writerType());
+
+        if ($pending instanceof PendingDispatch) {
+            if ($this->queueConnection !== null) {
+                $pending->onConnection($this->queueConnection);
+            }
+
+            if ($this->queueName !== null) {
+                $pending->onQueue($this->queueName);
+            }
+
+            $completion = $this->completionConfig();
+            if ($completion->hasWork()) {
+                // Append the completion job AFTER Maatwebsite's write chain so it
+                // runs only once the file is fully stored.
+                $job = $pending->getJob();
+                if (is_object($job) && method_exists($job, 'appendToChain')) {
+                    $job->appendToChain($this->makeCompletionJob($resolvedFilename, $storagePath, $storageDisk));
+                }
+            }
+        }
 
         return new ExportResult(
             filename: $resolvedFilename,
             path: $storagePath,
             disk: $storageDisk,
+            format: $this->format->value,
+            mimeType: $this->format->mimeType(),
         );
     }
 
@@ -383,16 +558,66 @@ final class FileExporter
     /**
      * @throws FileExportException
      */
-    private function buildExportObject(): CollectionExport|QueryExport|MultiSheetExport
+    private function buildExportObject(): CollectionExport|BaseQueryExport|MultiSheetExport
     {
         if ($this->sheets !== []) {
             return $this->buildMultiSheetExport();
         }
 
-        $export = $this->defaultSheet->build();
-        $export->withProperties($this->documentProperties);
+        $this->defaultSheet->withProperties($this->documentProperties);
 
-        return $export;
+        return $this->defaultSheet->buildResolved(
+            $this->format,
+            $this->autoSplitOverride ?? $this->config->autoSplit,
+            $this->rowsPerSheetOverride ?? $this->config->rowsPerSheet,
+        );
+    }
+
+    /**
+     * Reject queueing exports built from a live (non-serializable) query builder.
+     *
+     * @throws FileExportException
+     */
+    private function assertQueueable(): void
+    {
+        if ($this->sheets === []) {
+            if ($this->defaultSheet->usesLiveQueryBuilder()) {
+                throw FileExportException::queueRequiresSerializableQuery();
+            }
+
+            return;
+        }
+
+        foreach ($this->sheets as $sheet) {
+            if ($sheet->usesLiveQueryBuilder()) {
+                throw FileExportException::queueRequiresSerializableQuery();
+            }
+        }
+    }
+
+    private function completionConfig(): CompletionConfig
+    {
+        return new CompletionConfig(
+            fireEvent: $this->fireCompletionEvent,
+            notifiable: $this->notifiable,
+            notification: $this->notification,
+            callback: $this->completionCallback,
+            mailRecipients: $this->mailRecipients,
+        );
+    }
+
+    private function makeCompletionJob(string $filename, string $path, string $disk): HandleExportCompletion
+    {
+        return new HandleExportCompletion(
+            disk: $disk,
+            path: $path,
+            filename: $filename,
+            fireEvent: $this->fireCompletionEvent,
+            notifiable: $this->notifiable,
+            notification: $this->notification,
+            callback: $this->completionCallback !== null ? new SerializableClosure($this->completionCallback) : null,
+            mailRecipients: $this->mailRecipients,
+        );
     }
 
     /**
@@ -417,6 +642,10 @@ final class FileExporter
         return new SheetBuilder(
             defaultStyling: $this->config->styling,
             defaultChunkSize: $this->config->chunkSize,
+            maxRows: $this->config->maxRows,
+            disableAutoSizeOnLargeSheets: $this->config->disableAutoSizeOnLargeSheets,
+            disableStylingOnLargeSheets: $this->config->disableStylingOnLargeSheets,
+            defaultCsv: $this->config->csv,
         );
     }
 }

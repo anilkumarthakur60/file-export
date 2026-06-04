@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Anil\FileExport\Exports\Concerns;
 
+use Anil\FileExport\DataTransferObjects\CsvSettings;
 use Anil\FileExport\DataTransferObjects\StyleConfig;
 use Maatwebsite\Excel\Events\AfterSheet;
 use PhpOffice\PhpSpreadsheet\Style\Alignment;
@@ -22,11 +23,19 @@ trait HasSheetFormatting
 {
     protected StyleConfig $styleConfig;
 
+    protected ?CsvSettings $csvSettings = null;
+
     protected bool $includeSerialNumber = false;
 
     private int $serialIndex = 0;
 
     private ?string $sheetTitle = null;
+
+    /**
+     * When true, skip the expensive full-range styling (text wrapping and
+     * auto-filter) that is impractical on very large or auto-split sheets.
+     */
+    private bool $disableLargeSheetStyling = false;
 
     /** @var array<string, string> */
     protected array $columnFormats = [];
@@ -53,6 +62,43 @@ trait HasSheetFormatting
     public function withStyling(StyleConfig $config): static
     {
         $this->styleConfig = $config;
+
+        return $this;
+    }
+
+    /**
+     * Set the CSV/TSV writer settings for this export.
+     */
+    public function withCsvSettings(CsvSettings $settings): static
+    {
+        $this->csvSettings = $settings;
+
+        return $this;
+    }
+
+    /**
+     * Start serial numbering from a given offset.
+     *
+     * Used by auto-split so numbering stays continuous across sheets — the
+     * first row of sheet N continues where sheet N-1 left off.
+     */
+    public function withSerialStart(int $start): static
+    {
+        $this->serialIndex = $start;
+
+        return $this;
+    }
+
+    /**
+     * Skip full-range styling (text wrapping and auto-filter) for this sheet.
+     *
+     * Applying these over hundreds of thousands of rows is prohibitively slow,
+     * so they are disabled on large/auto-split sheets. The (cheap) header
+     * freeze is still applied.
+     */
+    public function disableLargeSheetStyling(bool $disable = true): static
+    {
+        $this->disableLargeSheetStyling = $disable;
 
         return $this;
     }
@@ -140,6 +186,16 @@ trait HasSheetFormatting
     }
 
     /**
+     * CSV/TSV writer settings (honoured only by delimited-text formats).
+     *
+     * @return array<string, string|bool>
+     */
+    public function getCsvSettings(): array
+    {
+        return $this->csvSettings?->toArray() ?? [];
+    }
+
+    /**
      * Apply header styling: bold, background color, font color, alignment.
      *
      * @return array<int, array<string, mixed>>
@@ -196,7 +252,7 @@ trait HasSheetFormatting
                 $highestRow = $sheet->getHighestRow();
                 $highestColumn = $sheet->getHighestColumn();
 
-                if ($this->styleConfig->wrapText) {
+                if ($this->styleConfig->wrapText && ! $this->disableLargeSheetStyling) {
                     $sheet->getStyle("A1:{$highestColumn}{$highestRow}")
                         ->getAlignment()
                         ->setWrapText(true)
@@ -207,7 +263,7 @@ trait HasSheetFormatting
                     $sheet->freezePane('A2');
                 }
 
-                if ($this->styleConfig->autoFilter) {
+                if ($this->styleConfig->autoFilter && ! $this->disableLargeSheetStyling) {
                     $sheet->setAutoFilter("A1:{$highestColumn}1");
                 }
             },

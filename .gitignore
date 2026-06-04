@@ -1,3 +1,7 @@
 composer.lock
 vendor
 .idea
+.phpunit.result.cache
+.phpunit.cache
+.pest
+.pest.cache

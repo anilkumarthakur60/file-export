@@ -16,7 +16,7 @@ use Maatwebsite\Excel\Concerns\WithProperties;
 class MultiSheetExport implements WithMultipleSheets, WithProperties
 {
     /**
-     * @param  array<int, CollectionExport|QueryExport>  $sheets  The individual sheet exports.
+     * @param  array<int, CollectionExport|BaseQueryExport>  $sheets  The individual sheet exports.
      * @param  array<string, string>  $documentProperties  Document metadata (title, creator, company, etc.).
      */
     public function __construct(
@@ -25,7 +25,7 @@ class MultiSheetExport implements WithMultipleSheets, WithProperties
     ) {}
 
     /**
-     * @return array<int, CollectionExport|QueryExport>
+     * @return array<int, CollectionExport|BaseQueryExport>
      */
     public function sheets(): array
     {

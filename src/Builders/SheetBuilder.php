@@ -5,9 +5,13 @@ declare(strict_types=1);
 namespace Anil\FileExport\Builders;
 
 use Anil\FileExport\Contracts\Exportable;
+use Anil\FileExport\DataTransferObjects\CsvSettings;
 use Anil\FileExport\DataTransferObjects\StyleConfig;
+use Anil\FileExport\Enums\ExportFormat;
 use Anil\FileExport\Exceptions\FileExportException;
 use Anil\FileExport\Exports\CollectionExport;
+use Anil\FileExport\Exports\LargeQueryExport;
+use Anil\FileExport\Exports\MultiSheetExport;
 use Anil\FileExport\Exports\QueryExport;
 use Closure;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
@@ -34,8 +38,8 @@ final class SheetBuilder
 
     private ?Closure $mappingCallback = null;
 
-    /** @var EloquentBuilder<\Illuminate\Database\Eloquent\Model>|Relation<\Illuminate\Database\Eloquent\Model, \Illuminate\Database\Eloquent\Model, mixed>|null */
-    private EloquentBuilder|Relation|null $queryBuilder = null;
+    /** @var EloquentBuilder<\Illuminate\Database\Eloquent\Model>|Relation<\Illuminate\Database\Eloquent\Model, \Illuminate\Database\Eloquent\Model, mixed>|(Closure(): (EloquentBuilder<\Illuminate\Database\Eloquent\Model>|Relation<\Illuminate\Database\Eloquent\Model, \Illuminate\Database\Eloquent\Model, mixed>))|null */
+    private EloquentBuilder|Relation|Closure|null $queryBuilder = null;
 
     /** @var Collection<int, mixed>|null */
     private ?Collection $collection = null;
@@ -43,6 +47,8 @@ final class SheetBuilder
     private bool $includeSerialNumber = false;
 
     private ?StyleConfig $styleConfig = null;
+
+    private ?CsvSettings $csvSettings = null;
 
     private ?int $chunkSize = null;
 
@@ -62,6 +68,10 @@ final class SheetBuilder
     public function __construct(
         private readonly StyleConfig $defaultStyling,
         private readonly int $defaultChunkSize = 1000,
+        private readonly ?int $maxRows = 1000000,
+        private readonly bool $disableAutoSizeOnLargeSheets = true,
+        private readonly bool $disableStylingOnLargeSheets = true,
+        private readonly CsvSettings $defaultCsv = new CsvSettings,
     ) {}
 
     // ──────────────────────────────────────────
@@ -71,9 +81,13 @@ final class SheetBuilder
     /**
      * Set an Eloquent query as the data source (memory-efficient, chunked).
      *
-     * @param  EloquentBuilder<\Illuminate\Database\Eloquent\Model>|Relation<\Illuminate\Database\Eloquent\Model, \Illuminate\Database\Eloquent\Model, mixed>  $builder
+     * Pass a factory closure (e.g. fn () => User::query()) instead of a live
+     * builder when the export will be queued — a live builder holds a database
+     * connection that cannot be serialized onto a queue.
+     *
+     * @param  EloquentBuilder<\Illuminate\Database\Eloquent\Model>|Relation<\Illuminate\Database\Eloquent\Model, \Illuminate\Database\Eloquent\Model, mixed>|(Closure(): (EloquentBuilder<\Illuminate\Database\Eloquent\Model>|Relation<\Illuminate\Database\Eloquent\Model, \Illuminate\Database\Eloquent\Model, mixed>))  $builder
      */
-    public function fromQuery(EloquentBuilder|Relation $builder): self
+    public function fromQuery(EloquentBuilder|Relation|Closure $builder): self
     {
         $this->queryBuilder = $builder;
         $this->collection = null;
@@ -92,6 +106,18 @@ final class SheetBuilder
         $this->queryBuilder = null;
 
         return $this;
+    }
+
+    /**
+     * Whether this sheet's source is a live (non-serializable) query builder.
+     *
+     * Used to reject queued exports built from a live builder, which holds a
+     * database connection that cannot be serialized onto a queue.
+     */
+    public function usesLiveQueryBuilder(): bool
+    {
+        return $this->queryBuilder instanceof EloquentBuilder
+            || $this->queryBuilder instanceof Relation;
     }
 
     /**
@@ -167,6 +193,16 @@ final class SheetBuilder
     public function withStyling(StyleConfig $config): self
     {
         $this->styleConfig = $config;
+
+        return $this;
+    }
+
+    /**
+     * Override the CSV/TSV writer settings for this sheet.
+     */
+    public function withCsvSettings(CsvSettings $settings): self
+    {
+        $this->csvSettings = $settings;
 
         return $this;
     }
@@ -253,6 +289,62 @@ final class SheetBuilder
     }
 
     /**
+     * Validate, enforce the row limit, and build the export — auto-splitting
+     * oversized query exports across multiple sheets when the format requires.
+     *
+     * Used for single-sheet exports, where the workbook format is known and
+     * the package may transparently split or guard against oversized output.
+     * Multi-sheet workbooks use build() per sheet instead (no auto-split).
+     *
+     * @param  bool  $autoSplitEnabled  Whether oversized xlsx/ods query exports may split across sheets.
+     * @param  int  $rowsPerSheet  Maximum rows per sheet before splitting.
+     *
+     * @throws FileExportException
+     */
+    public function buildResolved(ExportFormat $format, bool $autoSplitEnabled, int $rowsPerSheet): CollectionExport|QueryExport|MultiSheetExport
+    {
+        $this->validate();
+
+        $styling = $this->styleConfig ?? $this->defaultStyling;
+
+        /** @var Closure $mappingCallback */
+        $mappingCallback = $this->mappingCallback;
+
+        // Collection sources are already in memory: guard the row limit but
+        // never split (a collection that large is itself the problem).
+        if ($this->queryBuilder === null) {
+            $total = $this->collection?->count() ?? 0;
+            if ($this->rowLimit !== null) {
+                $total = min($total, $this->rowLimit);
+            }
+            $this->enforceMaxRows($total, $format);
+
+            return $this->buildCollectionExport($styling, $mappingCallback);
+        }
+
+        $total = $this->countQueryRows($this->queryBuilder);
+        if ($this->rowLimit !== null) {
+            $total = min($total, $this->rowLimit);
+        }
+
+        $shouldSplit = $autoSplitEnabled
+            && $format->hasRowLimit()
+            && $total > $rowsPerSheet;
+
+        if ($shouldSplit) {
+            if ($format === ExportFormat::PDF) {
+                throw FileExportException::autoSplitUnsupported($format->value);
+            }
+
+            return $this->buildSplitExport($styling, $mappingCallback, $this->queryBuilder, $total, $rowsPerSheet);
+        }
+
+        $this->enforceMaxRows($total, $format);
+
+        return $this->buildQueryExport($styling, $mappingCallback);
+    }
+
+    /**
      * @throws FileExportException
      */
     public function validate(): void
@@ -276,8 +368,7 @@ final class SheetBuilder
 
     private function buildQueryExport(StyleConfig $styling, Closure $mappingCallback): QueryExport
     {
-        /** @var EloquentBuilder<\Illuminate\Database\Eloquent\Model>|Relation<\Illuminate\Database\Eloquent\Model, \Illuminate\Database\Eloquent\Model, mixed> $builder */
-        $builder = $this->queryBuilder;
+        $builder = $this->queryBuilder ?? throw FileExportException::missingDataSource();
 
         $export = new QueryExport(
             builder: $builder,
@@ -318,10 +409,108 @@ final class SheetBuilder
             ->withSerialNumber($this->includeSerialNumber)
             ->withColumnFormats($this->columnFormats)
             ->withColumnWidths($this->columnWidths)
-            ->withProperties($this->documentProperties);
+            ->withProperties($this->documentProperties)
+            ->withCsvSettings($this->csvSettings ?? $this->defaultCsv);
 
         if ($this->sheetTitle !== null) {
             $export->withTitle($this->sheetTitle);
         }
+    }
+
+    /**
+     * Throw if the resolved row count exceeds the configured maximum.
+     *
+     * Only formats with a per-sheet row limit (xlsx/ods/pdf) are guarded —
+     * CSV/TSV/HTML stream unbounded. Auto-split is the sanctioned way to
+     * exceed the limit, so this is never reached when splitting occurs.
+     *
+     * @throws FileExportException
+     */
+    private function enforceMaxRows(int $total, ExportFormat $format): void
+    {
+        if ($this->maxRows !== null && $format->hasRowLimit() && $total > $this->maxRows) {
+            throw FileExportException::rowLimitExceeded($total, $this->maxRows);
+        }
+    }
+
+    /**
+     * Count the rows a query would produce, without mutating the user's builder.
+     *
+     * @param  EloquentBuilder<\Illuminate\Database\Eloquent\Model>|Relation<\Illuminate\Database\Eloquent\Model, \Illuminate\Database\Eloquent\Model, mixed>|(Closure(): (EloquentBuilder<\Illuminate\Database\Eloquent\Model>|Relation<\Illuminate\Database\Eloquent\Model, \Illuminate\Database\Eloquent\Model, mixed>))  $builder
+     */
+    private function countQueryRows(EloquentBuilder|Relation|Closure $builder): int
+    {
+        // A factory closure already yields a fresh builder; a live builder is
+        // cloned so the count query never mutates the caller's instance.
+        $countable = $builder instanceof Closure ? $builder() : clone $builder;
+
+        if ($countable instanceof Relation) {
+            return $countable->getQuery()->toBase()->getCountForPagination();
+        }
+
+        return $countable->toBase()->getCountForPagination();
+    }
+
+    /**
+     * Split a query across multiple sheets, each capped at rowsPerSheet rows.
+     *
+     * @param  EloquentBuilder<\Illuminate\Database\Eloquent\Model>|Relation<\Illuminate\Database\Eloquent\Model, \Illuminate\Database\Eloquent\Model, mixed>|(Closure(): (EloquentBuilder<\Illuminate\Database\Eloquent\Model>|Relation<\Illuminate\Database\Eloquent\Model, \Illuminate\Database\Eloquent\Model, mixed>))  $builder
+     */
+    private function buildSplitExport(StyleConfig $styling, Closure $mappingCallback, EloquentBuilder|Relation|Closure $builder, int $total, int $cap): MultiSheetExport
+    {
+        $sheetCount = (int) ceil($total / $cap);
+
+        $windows = [];
+        for ($index = 0; $index < $sheetCount; $index++) {
+            $offset = $index * $cap;
+            $limit = min($cap, $total - $offset);
+            $windows[] = $this->buildQueryWindow($builder, $styling, $mappingCallback, $offset, $limit, $index, $cap);
+        }
+
+        return new MultiSheetExport(
+            sheets: $windows,
+            documentProperties: $this->documentProperties,
+        );
+    }
+
+    /**
+     * Build a single windowed sheet (offset/limit slice) for an auto-split export.
+     *
+     * @param  EloquentBuilder<\Illuminate\Database\Eloquent\Model>|Relation<\Illuminate\Database\Eloquent\Model, \Illuminate\Database\Eloquent\Model, mixed>|(Closure(): (EloquentBuilder<\Illuminate\Database\Eloquent\Model>|Relation<\Illuminate\Database\Eloquent\Model, \Illuminate\Database\Eloquent\Model, mixed>))  $builder
+     */
+    private function buildQueryWindow(EloquentBuilder|Relation|Closure $builder, StyleConfig $styling, Closure $mappingCallback, int $offset, int $limit, int $index, int $cap): QueryExport|LargeQueryExport
+    {
+        // A factory closure yields a fresh builder per query() call, so it can be
+        // shared across windows; a live builder is cloned so each window's
+        // offset/limit don't leak into its siblings.
+        $windowBuilder = $builder instanceof Closure ? $builder : clone $builder;
+        $chunkSize = $this->chunkSize ?? $this->defaultChunkSize;
+
+        $export = $this->disableAutoSizeOnLargeSheets
+            ? new LargeQueryExport($windowBuilder, $this->headers, $mappingCallback, $chunkSize, $styling)
+            : new QueryExport($windowBuilder, $this->headers, $mappingCallback, $chunkSize, $styling);
+
+        $export
+            ->withOffset($offset)
+            ->withLimit($limit)
+            ->withSerialNumber($this->includeSerialNumber)
+            ->withColumnFormats($this->columnFormats)
+            ->withColumnWidths($this->columnWidths)
+            ->withProperties($this->documentProperties)
+            ->withCsvSettings($this->csvSettings ?? $this->defaultCsv)
+            ->disableLargeSheetStyling($this->disableStylingOnLargeSheets);
+
+        if ($this->includeSerialNumber) {
+            // Continue numbering where the previous sheet left off.
+            $export->withSerialStart($index * $cap);
+        }
+
+        $title = $this->sheetTitle !== null
+            ? $this->sheetTitle.' '.($index + 1)
+            : 'Sheet'.($index + 1);
+
+        $export->withTitle($title);
+
+        return $export;
     }
 }

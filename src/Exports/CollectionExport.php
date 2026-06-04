@@ -8,9 +8,11 @@ use Anil\FileExport\DataTransferObjects\StyleConfig;
 use Anil\FileExport\Exports\Concerns\HasSheetFormatting;
 use Closure;
 use Illuminate\Support\Collection;
+use Laravel\SerializableClosure\SerializableClosure;
 use Maatwebsite\Excel\Concerns\FromCollection;
 use Maatwebsite\Excel\Concerns\ShouldAutoSize;
 use Maatwebsite\Excel\Concerns\WithColumnFormatting;
+use Maatwebsite\Excel\Concerns\WithCustomCsvSettings;
 use Maatwebsite\Excel\Concerns\WithColumnWidths;
 use Maatwebsite\Excel\Concerns\WithEvents;
 use Maatwebsite\Excel\Concerns\WithHeadings;
@@ -27,7 +29,7 @@ use Maatwebsite\Excel\Concerns\WithTitle;
  *
  * @implements WithMapping<mixed>
  */
-class CollectionExport implements FromCollection, ShouldAutoSize, WithColumnFormatting, WithColumnWidths, WithEvents, WithHeadings, WithMapping, WithProperties, WithStyles, WithTitle
+class CollectionExport implements FromCollection, ShouldAutoSize, WithColumnFormatting, WithColumnWidths, WithCustomCsvSettings, WithEvents, WithHeadings, WithMapping, WithProperties, WithStyles, WithTitle
 {
     use HasSheetFormatting;
 
@@ -40,7 +42,7 @@ class CollectionExport implements FromCollection, ShouldAutoSize, WithColumnForm
     public function __construct(
         private readonly Collection $data,
         private readonly array $headers,
-        private readonly Closure $mappingCallback,
+        private Closure $mappingCallback,
         StyleConfig $styleConfig = new StyleConfig,
     ) {
         $this->initializeFormatting($styleConfig);
@@ -72,4 +74,33 @@ class CollectionExport implements FromCollection, ShouldAutoSize, WithColumnForm
 
         return $this->prependSerialNumber($mapped);
     }
+
+    /**
+     * Capture state for queueing, wrapping the mapping closure so it serializes.
+     *
+     * @return array<mixed>
+     */
+    public function __serialize(): array
+    {
+        $data = get_object_vars($this);
+
+        $data['mappingCallback'] = new SerializableClosure($this->mappingCallback);
+
+        return $data;
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     */
+    public function __unserialize(array $data): void
+    {
+        foreach ($data as $key => $value) {
+            if ($value instanceof SerializableClosure) {
+                $value = $value->getClosure();
+            }
+
+            $this->{$key} = $value;
+        }
+    }
 }
+

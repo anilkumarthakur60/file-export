@@ -58,7 +58,7 @@ return [
     | unlimited. Helps prevent accidental memory exhaustion on large tables.
     |
     */
-    'max_rows' => env('FILE_EXPORT_MAX_ROWS', 1000000),
+    'max_rows' => (int) env('FILE_EXPORT_MAX_ROWS', 1000000),
 
     /*
     |--------------------------------------------------------------------------
@@ -70,6 +70,78 @@ return [
     |
     */
     'chunk_size' => (int) env('FILE_EXPORT_CHUNK_SIZE', 1000),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Auto-Split (Large Exports)
+    |--------------------------------------------------------------------------
+    |
+    | Spreadsheet formats (xlsx, ods) are capped at 1,048,576 rows per sheet.
+    | When a query export exceeds "rows_per_sheet", it is transparently split
+    | across multiple sheets in a single workbook. For truly large exports
+    | (10M+ rows) prefer CSV, which streams in a single pass with no limit.
+    |
+    | "disable_autosize" and "disable_styling_on_large_sheets" turn off the
+    | expensive auto-column-sizing and full-range styling for split/large
+    | sheets, where they would otherwise consume excessive time and memory.
+    |
+    */
+    'auto_split' => [
+        'enabled' => (bool) env('FILE_EXPORT_AUTO_SPLIT', true),
+        'rows_per_sheet' => (int) env('FILE_EXPORT_ROWS_PER_SHEET', 1000000),
+        'disable_autosize' => (bool) env('FILE_EXPORT_LARGE_DISABLE_AUTOSIZE', true),
+        'disable_styling_on_large_sheets' => (bool) env('FILE_EXPORT_LARGE_DISABLE_STYLING', true),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Queue
+    |--------------------------------------------------------------------------
+    |
+    | Connection and queue name used for queued exports (->queue()). Leave
+    | null to use your application's default queue connection and queue.
+    | Override per-export with ->onConnection() and ->onQueue().
+    |
+    */
+    'queue' => [
+        'connection' => env('FILE_EXPORT_QUEUE_CONNECTION'),
+        'queue' => env('FILE_EXPORT_QUEUE'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | CSV / TSV Settings
+    |--------------------------------------------------------------------------
+    |
+    | Writer settings for delimited-text formats. Ignored by xlsx/ods/etc.
+    | Set "use_bom" to true so spreadsheet apps open UTF-8 CSV correctly, and
+    | "delimiter" to ";" for locales where Excel expects semicolons.
+    |
+    */
+    'csv' => [
+        'delimiter' => env('FILE_EXPORT_CSV_DELIMITER', ','),
+        'enclosure' => env('FILE_EXPORT_CSV_ENCLOSURE', '"'),
+        'line_ending' => env('FILE_EXPORT_CSV_LINE_ENDING', "\n"),
+        'use_bom' => (bool) env('FILE_EXPORT_CSV_USE_BOM', false),
+        'include_separator_line' => (bool) env('FILE_EXPORT_CSV_SEPARATOR_LINE', false),
+        'excel_compatibility' => (bool) env('FILE_EXPORT_CSV_EXCEL_COMPAT', false),
+        'output_encoding' => env('FILE_EXPORT_CSV_OUTPUT_ENCODING', ''),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Email Delivery
+    |--------------------------------------------------------------------------
+    |
+    | When an export is emailed (via ->notifyMail()), the file is attached
+    | directly if its size is at or below "attach_threshold" bytes; otherwise
+    | a download link (signed for cloud disks) is emailed instead.
+    |
+    */
+    'mail' => [
+        'attach_threshold' => (int) env('FILE_EXPORT_MAIL_ATTACH_THRESHOLD', 10 * 1024 * 1024),
+        'subject' => env('FILE_EXPORT_MAIL_SUBJECT', 'Your export is ready'),
+    ],
 
     /*
     |--------------------------------------------------------------------------

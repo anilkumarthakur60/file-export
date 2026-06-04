@@ -2,13 +2,51 @@
 
 A powerful, fluent file export package for Laravel built on top of [Maatwebsite/Excel](https://laravel-excel.com/).
 
-SOLID architecture. PHPStan level max. Fully injectable and mockable — every dependency comes through the constructor.
+Export anything from a 10-row collection to a **10M+ row database table** — to XLSX, CSV, TSV,
+ODS, HTML, or PDF — and deliver it however you need: download it, store it on any disk, queue it
+in the background, email it, or grab the raw bytes.
+
+- **SOLID architecture** — every dependency is constructor-injected and swappable.
+- **PHPStan level max** — 0 errors.
+- **Pest test suite** — fully covered, runs in parallel.
+- **Scales** — chunked query reads, auto-splitting across sheets past the 1,048,576-row limit, and CSV streaming for unlimited rows.
+
+---
+
+## Table of Contents
+
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Data Sources](#data-sources)
+- [Output Modes](#output-modes)
+- [Formats](#formats)
+- [Column & Sheet Options](#column--sheet-options)
+- [Multi-Sheet Workbooks](#multi-sheet-workbooks)
+- [Large Datasets (1M – 10M+ rows)](#large-datasets-1m--10m-rows)
+- [Email & Completion Hooks](#email--completion-hooks)
+- [Queue Targeting](#queue-targeting)
+- [Reusable Exportable Classes](#reusable-exportable-classes)
+- [Custom Styling](#custom-styling)
+- [Swapping Implementations](#swapping-implementations)
+- [Conditionals & Macros](#conditionals--macros)
+- [Configuration Reference](#configuration-reference)
+- [API Reference](#api-reference)
+- [Testing](#testing)
+- [Static Analysis](#static-analysis)
+- [Architecture](#architecture)
+- [License](#license)
+
+---
 
 ## Requirements
 
 - PHP 8.2+
 - Laravel 11, 12, or 13
 - Maatwebsite/Excel 3.1+
+- `mpdf/mpdf` (only for PDF export)
+
+---
 
 ## Installation
 
@@ -16,19 +54,31 @@ SOLID architecture. PHPStan level max. Fully injectable and mockable — every d
 composer require anil/file-export
 ```
 
-Publish the config:
+Publish the config (optional):
 
 ```bash
 php artisan vendor:publish --tag=file-export-config
+```
+
+Publish the email template (optional, to customize the email body):
+
+```bash
+php artisan vendor:publish --tag=file-export-views
+```
+
+The service provider is auto-discovered. PDF export additionally requires:
+
+```bash
+composer require mpdf/mpdf
 ```
 
 ---
 
 ## Quick Start
 
-### Controller Trait
+### 1. Controller Trait
 
-The simplest way — add `CanExport` to your controller:
+The simplest way — add `CanExport` to a controller:
 
 ```php
 use Anil\FileExport\Traits\CanExport;
@@ -52,7 +102,7 @@ class UserController extends Controller
 }
 ```
 
-### Facade
+### 2. Facade
 
 ```php
 use Anil\FileExport\Facades\FileExport;
@@ -64,7 +114,7 @@ return FileExport::fromQuery(User::query())
     ->toResponse();
 ```
 
-### Dependency Injection (Recommended for Testing)
+### 3. Dependency Injection (recommended)
 
 ```php
 use Anil\FileExport\Services\FileExporter;
@@ -89,17 +139,38 @@ class ReportController extends Controller
 
 ---
 
-## Formats
+## Data Sources
+
+### From a query (chunked, memory-efficient)
 
 ```php
-use Anil\FileExport\Enums\ExportFormat;
+$exporter->fromQuery(User::query())
+    ->withHeaders(['Name', 'Email'])
+    ->withMapping(fn (User $u) => [$u->name, $u->email]);
+```
 
-->format(ExportFormat::XLSX)   // Excel (default)
-->format(ExportFormat::CSV)    // CSV
-->format(ExportFormat::TSV)    // Tab-separated
-->format(ExportFormat::ODS)    // OpenDocument
-->format(ExportFormat::HTML)   // HTML table
-->format(ExportFormat::PDF)    // PDF (requires mpdf/mpdf)
+> **Queueing a query export?** Pass a *factory closure* instead of a live builder — a live
+> Eloquent builder holds a database connection that can't be serialized onto a queue. The
+> closure is rebuilt fresh inside the job:
+>
+> ```php
+> $exporter->fromQuery(fn () => User::query()); // for ->queue()
+> ```
+
+### From a collection (in-memory)
+
+```php
+$exporter->fromCollection(collect($data))
+    ->withHeaders(['Key', 'Value'])
+    ->withMapping(fn (array $item) => [$item['key'], $item['value']]);
+```
+
+### From a relation
+
+```php
+$exporter->fromQuery($team->members())
+    ->withHeaders(['Name'])
+    ->withMapping(fn ($m) => [$m->name]);
 ```
 
 ---
@@ -114,12 +185,14 @@ $result = $exporter->fromQuery(User::query())
     ->withMapping(fn ($u) => [$u->name, $u->email])
     ->store();
 
-$result->filename;  // "users_2024-01-15_143022.xlsx"
-$result->url;       // Download URL (signed for cloud disks)
-$result->path;      // "exports/users_2024-01-15_143022.xlsx"
-$result->disk;      // "public"
-$result->toResponse();  // JsonResponse
-$result->toArray();     // Plain array
+$result->filename;     // "users_2024-01-15_143022.xlsx"
+$result->url;          // download URL (signed for cloud disks)
+$result->path;         // "exports/users_2024-01-15_143022.xlsx"
+$result->disk;         // "public"
+$result->format;       // "xlsx"
+$result->mimeType;     // "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+$result->toResponse(); // Illuminate\Http\JsonResponse
+$result->toArray();    // ['success' => true, 'filename' => ..., 'url' => ..., 'path' => ..., 'disk' => ..., 'format' => ..., 'mime_type' => ...]
 ```
 
 ### Direct download
@@ -134,15 +207,19 @@ return $exporter->fromQuery(User::query())
 ### Queue for background processing
 
 ```php
-$result = $exporter->fromQuery(User::query())
+$result = $exporter->fromQuery(fn () => User::query())
     ->withHeaders(['Name', 'Email'])
     ->withMapping(fn ($u) => [$u->name, $u->email])
     ->queue();
 ```
 
+Returns immediately with the expected filename; the file is written by your queue worker.
+Mapping callbacks are serialized automatically. See [Email & Completion Hooks](#email--completion-hooks)
+to be notified when a queued export finishes.
+
 ### Raw binary content
 
-Useful for email attachments, API responses, or piping to other services:
+Useful for email attachments, API responses, or piping elsewhere without touching disk:
 
 ```php
 $binary = $exporter->fromQuery(User::query())
@@ -153,77 +230,75 @@ $binary = $exporter->fromQuery(User::query())
 
 ---
 
-## Features
-
-### From a Collection
+## Formats
 
 ```php
-$exporter->fromCollection(collect($data))
-    ->withHeaders(['Key', 'Value'])
-    ->withMapping(fn (array $item) => [$item['key'], $item['value']])
+use Anil\FileExport\Enums\ExportFormat;
+
+->format(ExportFormat::XLSX)   // Excel (default)
+->format(ExportFormat::CSV)    // CSV          — no row limit, best for huge exports
+->format(ExportFormat::TSV)    // Tab-separated — no row limit
+->format(ExportFormat::ODS)    // OpenDocument
+->format(ExportFormat::HTML)   // HTML table   — no row limit
+->format(ExportFormat::PDF)    // PDF (requires mpdf/mpdf)
+```
+
+### CSV / TSV settings
+
+Control the delimiter, enclosure, line ending, and UTF-8 BOM for delimited-text exports. The
+BOM is the usual fix for spreadsheet apps that otherwise garble accented characters, and a `;`
+delimiter is what Excel expects in many European locales:
+
+```php
+use Anil\FileExport\DataTransferObjects\CsvSettings;
+
+$exporter->fromQuery(User::query())
+    ->withHeaders(['Name', 'Email'])
+    ->withMapping(fn ($u) => [$u->name, $u->email])
+    ->format(ExportFormat::CSV)
+    ->withCsvSettings(new CsvSettings(
+        delimiter: ';',
+        useBom: true,
+    ))
     ->store();
 ```
 
-### Serial Numbers
+Defaults come from the `csv` config section; these settings are ignored by non-delimited formats.
+
+---
+
+## Column & Sheet Options
 
 ```php
-->withSerialNumber()  // Adds "S.N." column (configurable label)
-```
+$exporter->fromQuery(User::query())
+    ->withHeaders(['Name', 'Email'])
+    ->withMapping(fn ($u) => [$u->name, $u->email])
 
-### Row Limit
+    ->withSerialNumber()              // prepend a "S.N." column (label is configurable)
+    ->withLimit(5000)                 // export only the first N rows
+    ->withChunkSize(5000)             // rows processed per chunk (query exports)
+    ->filename('monthly-report')      // a timestamp is appended automatically
+    ->disk('s3')                      // any filesystem disk
 
-```php
-->withLimit(5000)  // Export only first 5000 rows
-```
-
-### Chunk Size
-
-```php
-->withChunkSize(5000)  // Process 5000 rows at a time (query exports)
-```
-
-### Custom Filename and Disk
-
-```php
-->filename('monthly-report')  // Timestamp appended automatically
-->disk('s3')
-```
-
-### Column Formatting
-
-```php
-use PhpOffice\PhpSpreadsheet\Style\NumberFormat;
-
-->withColumnFormats([
-    'A' => NumberFormat::FORMAT_DATE_DDMMYYYY,
-    'B' => NumberFormat::FORMAT_NUMBER_COMMA_SEPARATED1,
-])
-```
-
-### Column Widths
-
-```php
-->withColumnWidths([
-    'A' => 15,
-    'B' => 25,
-    'C' => 50,
-])
-```
-
-### Document Properties
-
-```php
-->withProperties([
-    'title' => 'Monthly Report',
-    'creator' => 'Admin System',
-    'company' => 'Acme Corp',
-    'description' => 'Exported user data',
-])
+    ->withColumnFormats([             // PhpSpreadsheet number/date formats
+        'A' => \PhpOffice\PhpSpreadsheet\Style\NumberFormat::FORMAT_DATE_DDMMYYYY,
+        'B' => \PhpOffice\PhpSpreadsheet\Style\NumberFormat::FORMAT_NUMBER_COMMA_SEPARATED1,
+    ])
+    ->withColumnWidths([              // explicit widths (override auto-size)
+        'A' => 15, 'B' => 25, 'C' => 50,
+    ])
+    ->withProperties([                // document metadata
+        'title'       => 'Monthly Report',
+        'creator'     => 'Admin System',
+        'company'     => 'Acme Corp',
+        'description' => 'Exported user data',
+    ])
+    ->store();
 ```
 
 ---
 
-## Multi-Sheet Exports
+## Multi-Sheet Workbooks
 
 ```php
 use Anil\FileExport\Builders\SheetBuilder;
@@ -248,9 +323,112 @@ Each sheet has its own data source, headers, mapping, styling, serial numbers, c
 
 ---
 
-## Exportable Contract
+## Large Datasets (1M – 10M+ rows)
 
-Create reusable export definitions:
+XLSX and ODS are capped at **1,048,576 rows per sheet**. When a single-sheet query export exceeds
+the configured threshold, the package transparently **auto-splits** it across multiple sheets
+(`Sheet1`, `Sheet2`, …) in one workbook — with serial numbers continuing across sheets:
+
+```php
+$exporter->fromQuery(fn () => Order::query())
+    ->withHeaders(['ID', 'Total'])
+    ->withMapping(fn ($o) => [$o->id, $o->total])
+    ->autoSplit(true, 1_000_000)   // optional per-export override of the config threshold
+    ->store();
+```
+
+Auto-split is enabled by default (configurable). For very large sheets it automatically skips the
+expensive auto-column-sizing and full-range styling, which are impractical at that scale.
+
+**For truly huge exports (10M+ rows), prefer CSV** — it streams in a single pass with no row limit
+and no splitting:
+
+```php
+$exporter->fromQuery(fn () => Order::query())
+    ->withHeaders(['ID', 'Total'])
+    ->withMapping(fn ($o) => [$o->id, $o->total])
+    ->format(ExportFormat::CSV)
+    ->queue();
+```
+
+### Row guard (`max_rows`)
+
+`max_rows` caps a single physical sheet/file for spreadsheet formats and throws a
+`FileExportException` if exceeded — auto-split is the sanctioned way to go beyond it. Set it to
+`null` for unlimited CSV dumps.
+
+---
+
+## Email & Completion Hooks
+
+React to a finished export on **both** the synchronous `store()` path and after a queued export's
+write jobs complete. Mix and match any of the four mechanisms:
+
+```php
+use Anil\FileExport\DataTransferObjects\ExportResult;
+
+$exporter->fromQuery(fn () => User::query())
+    ->withHeaders(['Name', 'Email'])
+    ->withMapping(fn ($u) => [$u->name, $u->email])
+
+    // 1. Email the file (auto: attach if small, link if large — see mail config)
+    ->notifyMail('boss@example.com')              // or ['a@x.com', 'b@x.com']
+
+    // 2. Send a Laravel Notification to a notifiable
+    ->notify($user, new ExportReadyNotification)
+
+    // 3. Run a callback with the ExportResult
+    ->onCompletion(fn (ExportResult $result) => Log::info($result->url))
+
+    // 4. The ExportCompleted event always fires (disable with ->withCompletionEvent(false))
+    ->queue();
+```
+
+Listen for the event anywhere:
+
+```php
+use Anil\FileExport\Events\ExportCompleted;
+
+Event::listen(ExportCompleted::class, function (ExportCompleted $e) {
+    // $e->result->filename, $e->result->url, $e->result->path, $e->result->disk
+});
+```
+
+### Email delivery
+
+Emailed files are **attached** when at or below `mail.attach_threshold` bytes (10 MB by default),
+otherwise a **download link** is sent instead (signed for cloud disks). The email body is a
+responsive, dark-mode-aware HTML template with a bulletproof download button — customize it by
+publishing the view:
+
+```bash
+php artisan vendor:publish --tag=file-export-views
+# edit resources/views/vendor/file-export/emails/export-ready.blade.php
+```
+
+> When queueing, the completion callback must be serializable — its captured variables too
+> (a closure that captures a PDO connection or open resource cannot be queued).
+
+---
+
+## Queue Targeting
+
+Choose the connection and queue for background exports (defaults come from the `queue` config section):
+
+```php
+$exporter->fromQuery(fn () => User::query())
+    ->withHeaders(['Name'])
+    ->withMapping(fn ($u) => [$u->name])
+    ->onConnection('redis')
+    ->onQueue('exports')
+    ->queue();
+```
+
+---
+
+## Reusable Exportable Classes
+
+Create self-contained, reusable export definitions:
 
 ```php
 use Anil\FileExport\Contracts\Exportable;
@@ -303,7 +481,8 @@ $exporter->fromQuery(User::query())
 
 ## Swapping Implementations
 
-Override the filename or URL strategy in your `AppServiceProvider`:
+The filename and URL strategies are contracts — bind your own in a service provider
+(Dependency Inversion):
 
 ```php
 use Anil\FileExport\Contracts\FilenameGenerator;
@@ -313,65 +492,109 @@ $this->app->bind(FilenameGenerator::class, MyHashedFilenameGenerator::class);
 $this->app->bind(UrlResolver::class, CloudfrontUrlResolver::class);
 ```
 
+`FilenameGenerator::generate(?string $customName, ExportFormat $format): string` and
+`UrlResolver::resolve(string $disk, string $path): string` are the only methods to implement.
+
 ---
 
-## Testing
+## Conditionals & Macros
 
-Every dependency is injected via constructor — no hidden static calls in service classes.
+The exporter is `Conditionable` and `Macroable`. Use `when()` / `unless()` to build exports
+fluently without breaking the chain:
+
+```php
+$exporter->fromQuery(User::query())
+    ->withHeaders(['Name'])
+    ->withMapping(fn ($u) => [$u->name])
+    ->when($request->boolean('with_index'), fn ($e) => $e->withSerialNumber())
+    ->when($request->filled('format'), fn ($e) => $e->format(ExportFormat::from($request->format)))
+    ->store();
+```
+
+Add your own reusable shortcuts with a macro (e.g. in a service provider):
 
 ```php
 use Anil\FileExport\Services\FileExporter;
-use Maatwebsite\Excel\Excel;
-use Mockery;
 
-// Mock the Excel service
-$excel = Mockery::mock(Excel::class);
-$excel->shouldReceive('store')->once()->andReturn(true);
+FileExporter::macro('asReport', function (string $name) {
+    /** @var FileExporter $this */
+    return $this->filename($name)->withSerialNumber()->withCompletionEvent();
+});
 
-// Mock the filename generator
-$filenameGenerator = Mockery::mock(FilenameGenerator::class);
-$filenameGenerator->shouldReceive('generate')->andReturn('test_2024-01-01_120000.xlsx');
-
-// Mock the URL resolver
-$urlResolver = Mockery::mock(UrlResolver::class);
-$urlResolver->shouldReceive('resolve')->andReturn('https://example.com/exports/test.xlsx');
-
-// Create a fully testable exporter
-$exporter = new FileExporter($config, $filenameGenerator, $urlResolver, $excel);
-
-$result = $exporter->fromCollection(collect([...]))
-    ->withHeaders(['Name'])
-    ->withMapping(fn ($row) => [$row['name']])
-    ->store();
-
-$this->assertEquals('test_2024-01-01_120000.xlsx', $result->filename);
+$exporter->fromQuery(User::query())->withHeaders([...])->withMapping(...)->asReport('q3')->store();
 ```
 
 ---
 
-## Configuration
+## Configuration Reference
 
 ```php
 // config/file-export.php
 return [
-    'disk'           => 'public',
-    'path'           => 'exports',
-    'expire_days'    => 7,
-    'default_format' => 'xlsx',
-    'max_rows'       => 1000000,
-    'chunk_size'     => 1000,
+    // Storage disk for stored exports (must exist in config/filesystems.php).
+    'disk'           => env('FILE_EXPORT_DISK', 'public'),
 
+    // Directory (relative to the disk root) where files are written.
+    'path'           => env('FILE_EXPORT_PATH', 'exports'),
+
+    // Signed-URL expiration in days (cloud disks only).
+    'expire_days'    => (int) env('FILE_EXPORT_EXPIRE_DAYS', 7),
+
+    // Default format when none is specified: xlsx, csv, tsv, ods, html, pdf.
+    'default_format' => env('FILE_EXPORT_FORMAT', 'xlsx'),
+
+    // Max rows per sheet/file for spreadsheet formats. null = unlimited.
+    'max_rows'       => (int) env('FILE_EXPORT_MAX_ROWS', 1000000),
+
+    // Rows processed per chunk for query exports.
+    'chunk_size'     => (int) env('FILE_EXPORT_CHUNK_SIZE', 1000),
+
+    // Queue connection/name for ->queue(). null = application defaults.
+    'queue' => [
+        'connection' => env('FILE_EXPORT_QUEUE_CONNECTION'),
+        'queue'      => env('FILE_EXPORT_QUEUE'),
+    ],
+
+    // Auto-split oversized xlsx/ods query exports across multiple sheets.
+    'auto_split' => [
+        'enabled'                          => (bool) env('FILE_EXPORT_AUTO_SPLIT', true),
+        'rows_per_sheet'                   => (int) env('FILE_EXPORT_ROWS_PER_SHEET', 1000000),
+        'disable_autosize'                 => (bool) env('FILE_EXPORT_LARGE_DISABLE_AUTOSIZE', true),
+        'disable_styling_on_large_sheets'  => (bool) env('FILE_EXPORT_LARGE_DISABLE_STYLING', true),
+    ],
+
+    // CSV/TSV writer settings (ignored by xlsx/ods/etc.).
+    'csv' => [
+        'delimiter'              => env('FILE_EXPORT_CSV_DELIMITER', ','),
+        'enclosure'              => env('FILE_EXPORT_CSV_ENCLOSURE', '"'),
+        'line_ending'            => env('FILE_EXPORT_CSV_LINE_ENDING', "\n"),
+        'use_bom'                => (bool) env('FILE_EXPORT_CSV_USE_BOM', false),
+        'include_separator_line' => (bool) env('FILE_EXPORT_CSV_SEPARATOR_LINE', false),
+        'excel_compatibility'    => (bool) env('FILE_EXPORT_CSV_EXCEL_COMPAT', false),
+        'output_encoding'        => env('FILE_EXPORT_CSV_OUTPUT_ENCODING', ''),
+    ],
+
+    // Email delivery: attach if <= threshold bytes, else send a download link.
+    'mail' => [
+        'attach_threshold' => (int) env('FILE_EXPORT_MAIL_ATTACH_THRESHOLD', 10 * 1024 * 1024),
+        'subject'          => env('FILE_EXPORT_MAIL_SUBJECT', 'Your export is ready'),
+    ],
+
+    // Auto-generated filename pattern: {prefix}-{random}_{timestamp}.{ext}
     'filename' => [
-        'prefix'           => 'export',
-        'timestamp_format' => 'Y-m-d_His',
-        'random_length'    => 8,
+        'prefix'           => env('FILE_EXPORT_FILENAME_PREFIX', 'export'),
+        'timestamp_format' => env('FILE_EXPORT_TIMESTAMP_FORMAT', 'Y-m-d_His'),
+        'random_length'    => (int) env('FILE_EXPORT_RANDOM_LENGTH', 8),
     ],
 
+    // Default document metadata (overridable per-export via withProperties()).
     'properties' => [
-        'creator' => '',
-        'company' => '',
+        'creator' => env('FILE_EXPORT_CREATOR', ''),
+        'company' => env('FILE_EXPORT_COMPANY', ''),
     ],
 
+    // Default styling (overridable per-export via withStyling()).
+    // Colors are ARGB hex (e.g. "4472C4"). Empty string disables.
     'styling' => [
         'header_bold'           => true,
         'header_font_size'      => 12,
@@ -385,7 +608,109 @@ return [
 ];
 ```
 
-All values support `env()` overrides. See the config file for environment variable names.
+Every value supports an `env()` override (see the keys above).
+
+---
+
+## API Reference
+
+### Data source
+| Method | Description |
+| --- | --- |
+| `fromQuery(Builder\|Relation\|Closure $source)` | Eloquent query (or factory closure for queued exports). |
+| `fromCollection(Collection $data)` | In-memory collection. |
+| `fromExportable(Exportable $e, $source)` | Headers + mapping from a reusable class. |
+
+### Columns & sheet
+| Method | Description |
+| --- | --- |
+| `withHeaders(array $headers)` | Column header labels. |
+| `withMapping(Closure $cb)` | Maps each row to an array of cell values. |
+| `withSerialNumber(bool = true)` | Prepend a serial-number column. |
+| `withLimit(?int $limit)` | Cap the total exported rows. |
+| `withChunkSize(int $size)` | Rows per chunk (query exports). |
+| `withColumnFormats(array $formats)` | Per-column number/date formats. |
+| `withColumnWidths(array $widths)` | Explicit column widths. |
+| `withStyling(StyleConfig $style)` | Override default styling. |
+| `withCsvSettings(CsvSettings $s)` | Delimiter / enclosure / BOM for CSV & TSV. |
+| `withProperties(array $props)` | Document metadata. |
+
+### File & format
+| Method | Description |
+| --- | --- |
+| `format(ExportFormat $format)` | Output format. |
+| `filename(string $name)` | Custom filename (timestamp appended). |
+| `disk(string $disk)` | Target filesystem disk. |
+| `autoSplit(?bool $enabled = true, ?int $rowsPerSheet = null)` | Per-export auto-split control. |
+| `addSheet(string $title, Closure $cfg)` | Add a sheet to a multi-sheet workbook. |
+
+### Completion & queue
+| Method | Description |
+| --- | --- |
+| `notifyMail(string\|array $recipients)` | Email the export (attach or link). |
+| `notify(object $notifiable, Notification $n)` | Send a Notification on completion. |
+| `onCompletion(Closure $cb)` | Run a callback with the `ExportResult`. |
+| `withCompletionEvent(bool = true)` | Toggle the `ExportCompleted` event. |
+| `onConnection(?string $connection)` | Queue connection for `queue()`. |
+| `onQueue(?string $queue)` | Queue name for `queue()`. |
+
+### Output
+| Method | Returns | Description |
+| --- | --- | --- |
+| `store()` | `ExportResult` | Write to disk + resolve URL. |
+| `download()` | `BinaryFileResponse` | Stream as a browser download. |
+| `queue()` | `ExportResult` | Dispatch to the queue. |
+| `raw()` | `string` | Raw file bytes. |
+
+### Conditionals & macros
+`when($value, $callback)`, `unless($value, $callback)` (via `Conditionable`), and
+`FileExporter::macro($name, $callback)` (via `Macroable`).
+
+### `CanExport` trait helpers
+`export($builder, $headers, $mapping)`, `exportCollection($collection, $headers, $mapping)`,
+`exportUsing(Exportable $e, $source)`, and `fileExporter()` for full access.
+
+---
+
+## Testing
+
+The package's own suite is written in [Pest](https://pestphp.com/) on top of `orchestra/testbench`:
+
+```bash
+composer test            # vendor/bin/pest
+vendor/bin/pest --parallel
+```
+
+Because the `Excel` service is injected via the `Maatwebsite\Excel\Exporter` interface (not the
+facade), `Excel::fake()` works seamlessly in your application's tests:
+
+```php
+use Anil\FileExport\Services\FileExporter;
+use Maatwebsite\Excel\Facades\Excel;
+
+it('exports users', function () {
+    Excel::fake();
+
+    app(FileExporter::class)
+        ->fromQuery(User::query())
+        ->withHeaders(['Name'])
+        ->withMapping(fn ($u) => [$u->name])
+        ->store();
+
+    Excel::assertStored('exports/users.xlsx', 'public');
+});
+```
+
+Every dependency is constructor-injected, so the exporter is fully mockable:
+
+```php
+use Maatwebsite\Excel\Exporter;
+
+$excel = Mockery::mock(Exporter::class);
+$excel->shouldReceive('store')->once()->andReturn(true);
+
+$exporter = new FileExporter($config, $filenameGenerator, $urlResolver, $excel, $completionHandler);
+```
 
 ---
 
@@ -404,37 +729,52 @@ PHPStan level max with Larastan — 0 errors.
 ```
 src/
 ├── Builders/
-│   └── SheetBuilder.php                   # Configures a single sheet
+│   └── SheetBuilder.php                   # Configures a single sheet (+ auto-split, max_rows)
 ├── Contracts/
 │   ├── Exportable.php                     # User export definition contract
 │   ├── FilenameGenerator.php              # Swappable filename strategy
 │   └── UrlResolver.php                    # Swappable URL resolution
 ├── DataTransferObjects/
-│   ├── ExportConfig.php                   # Full config as typed readonly DTO
-│   ├── ExportResult.php                   # Result from store()/queue()
+│   ├── CompletionConfig.php               # Completion options (event/notify/callback/email)
+│   ├── CsvSettings.php                    # CSV/TSV writer settings (delimiter/BOM/…)
+│   ├── ExportConfig.php                   # Full config as a typed readonly DTO
+│   ├── ExportResult.php                   # Result from store()/queue() (filename/url/format/mime/…)
 │   └── StyleConfig.php                    # Styling config readonly DTO
 ├── Enums/
-│   └── ExportFormat.php                   # XLSX, CSV, TSV, ODS, HTML, PDF
+│   └── ExportFormat.php                   # XLSX, CSV, TSV, ODS, HTML, PDF (+ hasRowLimit)
+├── Events/
+│   └── ExportCompleted.php                # Fired when an export finishes
 ├── Exceptions/
 │   └── FileExportException.php            # Named constructors for each error
 ├── Exports/
 │   ├── Concerns/
 │   │   └── HasSheetFormatting.php         # Shared formatting (zero duplication)
+│   ├── BaseQueryExport.php                # Shared chunked-query logic (+ serialization)
 │   ├── CollectionExport.php               # FromCollection
+│   ├── LargeQueryExport.php               # Query export without auto-sizing (split/large)
 │   ├── MultiSheetExport.php               # WithMultipleSheets wrapper
-│   └── QueryExport.php                    # FromQuery + chunked
+│   └── QueryExport.php                    # FromQuery + chunked + auto-sized
 ├── Facades/
 │   └── FileExport.php                     # @mixin FileExporter
+├── Jobs/
+│   └── HandleExportCompletion.php         # Chained after queued writes (completion actions)
+├── Mail/
+│   └── ExportReadyMail.php                # Attach-or-link email of the export
 ├── Providers/
-│   └── FileExportServiceProvider.php      # Container bindings
+│   └── FileExportServiceProvider.php      # Container bindings + views
 ├── Services/
+│   ├── ExportCompletionHandler.php        # Runs completion actions (sync + queued)
 │   ├── FileExporter.php                   # Main fluent API
 │   ├── TemporaryUrlResolver.php           # Try signed URL, fallback to public
 │   └── TimestampedFilenameGenerator.php   # prefix-random_timestamp.ext
 └── Traits/
     └── CanExport.php                      # Controller convenience methods
+
+resources/views/emails/export-ready.blade.php   # Publishable, responsive email body
 ```
+
+---
 
 ## License
 
-MIT
+The MIT License (MIT). See [LICENSE](LICENSE) for details.
