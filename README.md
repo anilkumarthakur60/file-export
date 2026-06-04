@@ -1,6 +1,6 @@
 # Laravel File Export
 
-A powerful, fluent file export package for Laravel, built directly on [PhpSpreadsheet](https://phpspreadsheet.readthedocs.io/) with its own in-house export engine — no third-party Laravel-Excel wrapper.
+A powerful, fluent file **export and import** package for Laravel, built directly on [PhpSpreadsheet](https://phpspreadsheet.readthedocs.io/) with its own in-house engine — no third-party Laravel-Excel wrapper.
 
 Export anything from a 10-row collection to a **10M+ row database table** — to XLSX, CSV, TSV,
 ODS, HTML, or PDF — and deliver it however you need: download it, store it on any disk, queue it
@@ -23,6 +23,8 @@ in the background, email it, or grab the raw bytes.
 - [Formats](#formats)
 - [Column & Sheet Options](#column--sheet-options)
 - [Multi-Sheet Workbooks](#multi-sheet-workbooks)
+- [Advanced Export Sources & Styling](#advanced-export-sources--styling)
+- [Importing](#importing)
 - [Large Datasets (1M – 10M+ rows)](#large-datasets-1m--10m-rows)
 - [Email & Completion Hooks](#email--completion-hooks)
 - [Queue Targeting](#queue-targeting)
@@ -321,6 +323,102 @@ $result = $exporter
 ```
 
 Each sheet has its own data source, headers, mapping, styling, serial numbers, column widths, and formatting.
+
+---
+
+## Advanced Export Sources & Styling
+
+Beyond queries and collections, you can export from arrays, generators, iterators, or a Blade view,
+and customize the rendered worksheet directly:
+
+```php
+use PhpOffice\PhpSpreadsheet\Worksheet\Worksheet;
+
+// Sources
+$exporter->fromArray([[1, 'A'], [2, 'B']])->withHeaders(['ID', 'Name'])->withMapping(fn ($r) => $r);
+$exporter->fromGenerator(function () { yield ['A']; yield ['B']; })->withHeaders(['L'])->withMapping(fn ($x) => $x);
+$exporter->fromIterator($iterator)->withHeaders([...])->withMapping(...);
+$exporter->fromView(fn () => view('reports.invoice', ['order' => $order]));  // Blade → sheet
+
+// Styling & layout
+$exporter
+    ->styleUsing(fn (Worksheet $sheet) => $sheet->getStyle('A1:Z1')->getFont()->setBold(true)) // arbitrary cell styling
+    ->defaultStyleUsing(fn ($style) => $style->getFont()->setName('Calibri'))                  // workbook-wide
+    ->background('F3F4F6')         // default cell background
+    ->startCell('B2')              // begin data at B2
+    ->strictNulls()                // strict null comparison when writing
+    ->precalculateFormulas()       // evaluate formulas before saving
+    ->bindValuesUsing($binder)     // custom PhpSpreadsheet value binder
+    ->withCharts([$chart])         // attach charts (xlsx)
+    ->withImages([$drawing])       // embed logos/images (xlsx)
+    ->store();
+```
+
+Observe the render lifecycle with the export events `WritingExport`, `WritingSheet`,
+`SheetWritten`, and `ExportWritten`.
+
+---
+
+## Importing
+
+Read spreadsheets with the `FileImporter` (inject it, use the `FileImport` facade, or the
+`CanImport` controller trait):
+
+```php
+use Anil\FileExport\Services\FileImporter;
+
+// Quick reads
+$sheets = $importer->from('users.xlsx')->toArray();        // nested array of rows
+$rows   = $importer->from('users.xlsx', 's3')->toCollection();
+```
+
+Define an importable to map rows to models, validate, batch-insert, or upsert:
+
+```php
+use Anil\FileExport\Import\Contracts\MapsToModel;
+use Anil\FileExport\Import\Contracts\UsesHeadingRow;
+use Anil\FileExport\Import\Contracts\BatchesInserts;
+use Anil\FileExport\Import\Contracts\ValidatesRows;
+use Anil\FileExport\Import\Contracts\SkipsOnFailure;
+use Anil\FileExport\Import\Failure;
+use Illuminate\Database\Eloquent\Model;
+
+class UserImport implements MapsToModel, UsesHeadingRow, BatchesInserts, ValidatesRows, SkipsOnFailure
+{
+    public function headingRow(): int { return 1; }
+    public function batchSize(): int { return 1000; }
+    public function rules(): array { return ['email' => 'required|email']; }
+    public function onFailure(array $failures): void { /* @var Failure[] $failures */ }
+
+    public function model(array $row): Model|array|null
+    {
+        return new User(['name' => $row['name'], 'email' => $row['email']]);
+    }
+}
+
+$importer->from('users.xlsx')->import(new UserImport);
+$importer->from('users.xlsx')->queue(new UserImport);   // background import
+```
+
+### Import contracts (own names)
+
+| Capability | Contract | Method |
+| --- | --- | --- |
+| Receive all rows | `ReceivesArray` / `ReceivesCollection` | `array()` / `collection()` |
+| Per-row handler | `HandlesEachRow` | `onRow(ImportRow)` |
+| Map to models | `MapsToModel` | `model(array)` |
+| Heading row | `UsesHeadingRow` | `headingRow()` |
+| Start / limit / columns | `StartsAtRow` / `LimitsRows` / `LimitsColumns` | `startRow()` / `limit()` / `endColumn()` |
+| Skip empty rows | `SkipsEmptyRows` | — |
+| Mapped cells | `MapsCells` | `cellMap()` |
+| Validation | `ValidatesRows` (+ `PreparesForValidation`) | `rules()` / `prepareForValidation()` |
+| Skip failures / errors | `SkipsOnFailure` / `SkipsOnError` | `onFailure()` / `onError()` |
+| Batch / upsert / dedupe | `BatchesInserts` / `Upserts` (+ `SpecifiesUpsertColumns`) / `SkipsDuplicates` | `batchSize()` / `uniqueBy()` / `upsertColumns()` |
+| Multiple sheets | `ImportsMultipleSheets` | `sheets()` |
+| Chunked (queued) | `ReadsChunked` | `chunkSize()` |
+| Formulas / formatting | `EvaluatesFormulas` / `FormatsCellData` | — |
+
+Import events: `ReadingImport`, `SheetRead`, `ImportRead`, `ImportFailed`.
 
 ---
 

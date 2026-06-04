@@ -30,7 +30,7 @@ final class RowValidator
     {
         $validator = $this->validator->make($row, $importable->rules());
 
-        if ($validator->passes()) {
+        if (! $validator->fails()) {
             return true;
         }
 

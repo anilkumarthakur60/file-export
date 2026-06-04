@@ -6,7 +6,11 @@ namespace Anil\FileExport\Services;
 
 use Anil\FileExport\DataTransferObjects\ExportConfig;
 use Anil\FileExport\Exceptions\FileImportException;
+use Anil\FileExport\Import\Contracts\ReadsChunked;
+use Anil\FileExport\Import\LocalFile;
 use Anil\FileExport\Import\SpreadsheetReader;
+use Anil\FileExport\Jobs\ImportFile;
+use Anil\FileExport\Jobs\ReadImportChunk;
 use Closure;
 use Illuminate\Filesystem\FilesystemManager;
 use Illuminate\Support\Collection;
@@ -80,6 +84,39 @@ final class FileImporter
     }
 
     /**
+     * Queue the import. Importables implementing ReadsChunked are split into
+     * one queued job per row window; others run as a single queued job.
+     *
+     * @throws FileImportException
+     */
+    public function queue(object $importable): void
+    {
+        $file = $this->file ?? throw FileImportException::missingFile();
+
+        if (! $importable instanceof ReadsChunked) {
+            ImportFile::dispatch($importable, $file, $this->disk);
+
+            return;
+        }
+
+        [$path, $isTemporary] = $this->resolveLocalFile();
+        try {
+            $total = $this->reader->rowCount($path);
+        } finally {
+            if ($isTemporary) {
+                @unlink($path);
+            }
+        }
+
+        $start = $this->reader->dataStartRow($importable);
+        $size = max(1, $importable->chunkSize());
+
+        for ($from = $start; $from <= $total; $from += $size) {
+            ReadImportChunk::dispatch($importable, $file, $this->disk, $from, min($from + $size - 1, $total));
+        }
+    }
+
+    /**
      * Resolve the source to a local path, run the callback, and clean up any temp copy.
      *
      * @template T
@@ -111,40 +148,6 @@ final class FileImporter
     {
         $file = $this->file ?? throw FileImportException::missingFile();
 
-        // Absolute/local path used directly when no disk is specified.
-        if ($this->disk === null && is_file($file)) {
-            return [$file, false];
-        }
-
-        $storage = $this->filesystem->disk($this->disk ?? $this->config->disk);
-
-        if (! $storage->exists($file)) {
-            throw FileImportException::unreadableFile($file);
-        }
-
-        // Use the disk's real path when it is local.
-        try {
-            $local = $storage->path($file);
-            if (is_file($local)) {
-                return [$local, false];
-            }
-        } catch (\Throwable) {
-            // Disk has no local path (e.g. S3) — fall through to a temp copy.
-        }
-
-        $extension = pathinfo($file, PATHINFO_EXTENSION) ?: 'tmp';
-        $temporary = sys_get_temp_dir().'/'.uniqid('fimp_', true).'.'.$extension;
-
-        $stream = $storage->readStream($file);
-        if ($stream === null) {
-            throw FileImportException::unreadableFile($file);
-        }
-
-        file_put_contents($temporary, $stream);
-        if (is_resource($stream)) {
-            fclose($stream);
-        }
-
-        return [$temporary, true];
+        return LocalFile::resolve($this->filesystem, $file, $this->disk, $this->config->disk);
     }
 }

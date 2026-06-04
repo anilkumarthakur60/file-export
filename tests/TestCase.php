@@ -20,7 +20,7 @@ abstract class TestCase extends Orchestra
         Schema::create('users', function ($table): void {
             $table->id();
             $table->string('name');
-            $table->string('email');
+            $table->string('email')->unique();
             $table->boolean('active')->default(true);
             $table->timestamps();
         });

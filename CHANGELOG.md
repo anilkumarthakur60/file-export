@@ -23,6 +23,18 @@ v2 does **not** maintain backward compatibility with v1.
 
 ### Added
 
+- **Full import engine** (own naming) — `FileImporter` / `FileImport` facade / `CanImport` trait
+  read xlsx/csv/ods into arrays, collections, per-row handlers, or Eloquent models. Contracts:
+  `ReceivesArray`, `ReceivesCollection`, `HandlesEachRow`, `MapsToModel`, `UsesHeadingRow`,
+  `StartsAtRow`, `LimitsRows`, `LimitsColumns`, `SkipsEmptyRows`, `MapsCells`, `ValidatesRows`
+  (+ `PreparesForValidation`, `SkipsOnFailure`, `SkipsOnError`), `BatchesInserts`, `Upserts`
+  (+ `SpecifiesUpsertColumns`), `SkipsDuplicates`, `ImportsMultipleSheets`, `ReadsChunked`,
+  `EvaluatesFormulas`, `FormatsCellData`. Queued (`queue()`) and chunked imports + import events
+  (`ReadingImport`/`SheetRead`/`ImportRead`/`ImportFailed`).
+- **Advanced export sources** — `fromArray()`, `fromGenerator()`, `fromIterator()`, `fromView()`
+  (Blade → sheet), plus `styleUsing()`, `defaultStyleUsing()`, `background()`, `startCell()`,
+  `strictNulls()`, `precalculateFormulas()`, `bindValuesUsing()`, `withCharts()`, `withImages()`,
+  and export events (`WritingExport`/`WritingSheet`/`SheetWritten`/`ExportWritten`).
 - **Email delivery** — `->notifyMail($recipients)` sends the export, attaching the
   file when it's at/below `mail.attach_threshold` bytes or emailing a (signed)
   download link otherwise. Ships a responsive, dark-mode-aware, publishable
